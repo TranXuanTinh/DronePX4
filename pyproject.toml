@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone-inspector"
+version = "0.1.0"
+description = "Autonomous Inspection Drone MVP — PX4 SITL + Gazebo Simulation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    # Flight control
+    "mavsdk>=2.0.0",
+    "aioconsole>=0.7.0",
+    
+    # Perception
+    "ultralytics>=8.2.0",
+    "opencv-python-headless>=4.8.0",
+    "numpy>=1.24.0",
+    "lap>=0.4.0",
+    "cython-bbox>=0.1.5",
+    
+    # Dashboard backend
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "websockets>=12.0",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.6.0",
+    
+    # Reports
+    "reportlab>=4.1.0",
+    
+    # Config & utilities
+    "pyyaml>=6.0",
+    "transitions>=0.9.0",
+    "aiohttp>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true

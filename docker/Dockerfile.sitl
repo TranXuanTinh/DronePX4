@@ -1,0 +1,32 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PX4_HOME=/root/PX4-Autopilot
+
+# System dependencies
+RUN apt-get update && apt-get install -y \
+    git cmake build-essential \
+    python3 python3-pip python3-venv \
+    curl wget unzip sudo \
+    libopencv-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# PX4 Autopilot
+RUN git clone --depth 1 https://github.com/PX4/PX4-Autopilot.git --recursive $PX4_HOME
+WORKDIR $PX4_HOME
+RUN bash ./Tools/setup/ubuntu.sh --no-nuttx --no-sim-tools && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Python app dependencies
+COPY requirements.txt /app/requirements.txt
+RUN pip3 install --no-cache-dir -r /app/requirements.txt
+
+# Copy application code
+COPY . /app
+WORKDIR /app
+
+# Expose ports
+EXPOSE 14540/udp 14550/udp 8000 3000
+
+# Default: launch PX4 SITL
+CMD ["bash", "-c", "cd $PX4_HOME && make px4_sitl gz_x500"]

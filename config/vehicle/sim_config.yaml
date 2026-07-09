@@ -1,0 +1,92 @@
+# ============================================================
+# Drone Inspector — Simulation Configuration
+# ============================================================
+# All settings for SITL-only operation.
+# No hardware-specific fields.
+# ============================================================
+
+vehicle:
+  name: "Inspector-SIM"
+  frame: "x500"  # Gazebo model name
+
+# === SITL Connection ===
+connection:
+  mavsdk_address: "udp://:14540"
+  qgc_address: "udp://:14550"
+
+# === Gazebo Camera ===
+camera:
+  topic: "/camera"                  # Gazebo transport topic
+  width: 640
+  height: 480
+  hfov_deg: 60                      # Horizontal field of view
+  fps: 15                           # Target capture rate
+
+# === Perception ===
+perception:
+  model: "yolov8s.pt"               # Ultralytics model file
+  backend: "pytorch"                 # pytorch | onnx
+  device: "cpu"                      # cpu | cuda:0
+  confidence_threshold: 0.45
+  nms_threshold: 0.45
+  classes:                           # COCO classes to detect
+    - "person"
+    - "car"
+    - "truck"
+    - "bicycle"
+    - "backpack"
+  tracker:
+    type: "bytetrack"
+    track_thresh: 0.5
+    match_thresh: 0.8
+    track_buffer: 30
+    frame_rate: 10
+
+# === Mission ===
+mission:
+  takeoff_altitude_m: 15.0
+  search_altitude_m: 20.0
+  inspect_altitude_m: 8.0
+  max_speed_ms: 5.0
+  
+  # Search area (centered on SITL default home)
+  search_area:
+    center_lat: 47.397742
+    center_lon: 8.545594
+    width_m: 200
+    height_m: 150
+    spacing_m: 30                    # Distance between lawnmower passes
+  
+  search_pattern: "lawnmower"        # lawnmower | expanding_square | custom
+  
+  # Detection confirmation
+  detection_confirm_frames: 5        # Consecutive frames to confirm
+  detection_confirm_timeout_s: 3.0   # Max time to wait for confirmation
+  
+  # Inspection orbit
+  inspect_orbit_radius_m: 10.0
+  inspect_orbit_speed_ms: 2.0
+  inspect_orbit_points: 8            # Number of points in orbit
+
+# === Safety (Simulation) ===
+safety:
+  geofence_radius_m: 500
+  max_altitude_m: 120
+  min_battery_percent: 20
+  critical_battery_percent: 10
+  connection_timeout_s: 5.0
+
+# === Dashboard ===
+dashboard:
+  backend_host: "0.0.0.0"
+  backend_port: 8000
+  frontend_port: 3000
+  video_quality: 70                  # JPEG quality (0-100)
+  telemetry_rate_hz: 10
+
+# === Logging ===
+logging:
+  level: "INFO"                      # DEBUG | INFO | WARNING | ERROR
+  log_dir: "data/logs"
+  detection_dir: "data/detections"
+  report_dir: "data/reports"

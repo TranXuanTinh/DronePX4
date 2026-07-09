@@ -1,0 +1,51 @@
+version: "3.8"
+
+services:
+  # PX4 SITL + Gazebo simulator
+  px4-sitl:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sitl
+    ports:
+      - "14540:14540/udp"
+      - "14550:14550/udp"
+    environment:
+      - PX4_SIM_MODEL=gz_x500
+      - DISPLAY=${DISPLAY:-:0}
+      - HEADLESS=${HEADLESS:-0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    network_mode: host
+    restart: unless-stopped
+
+  # Dashboard backend (FastAPI)
+  dashboard-backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sitl
+    command: >
+      python3 -m uvicorn src.dashboard.backend.main:app
+      --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../src:/app/src
+      - ../config:/app/config
+      - ../data:/app/data
+    depends_on:
+      - px4-sitl
+    network_mode: host
+    restart: unless-stopped
+
+  # Dashboard frontend (React + Vite)
+  dashboard-frontend:
+    image: node:20-slim
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../src/dashboard/frontend:/app
+    depends_on:
+      - dashboard-backend
+    restart: unless-stopped
