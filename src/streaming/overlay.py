@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from typing import List
 
-from src.perception.tracker import Track
+from src.core.types import Track
 
 
 # Color palette for different classes (BGR format)

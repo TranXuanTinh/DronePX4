@@ -1,142 +1,186 @@
 """
-Safety Monitor — Checks simulated safety conditions.
+Safety Monitor — Chain of Responsibility pattern.
 
-Monitors battery, geofence, altitude, and connection status.
-Returns the highest-priority safety action when triggered.
+Each safety concern is a separate SafetyRule. SafetyMonitor composes
+them and returns the highest-priority action. Adding a new rule
+(e.g., wind speed) requires only creating a new class — no existing
+code changes (OCP).
 """
 from __future__ import annotations
 
 import logging
 import math
-from enum import IntEnum
-from typing import TYPE_CHECKING, Optional
+from typing import List
 
-if TYPE_CHECKING:
-    from src.bridge.mavlink_bridge import TelemetryFrame
+from src.core.interfaces import SafetyChecker, SafetyRule
+from src.core.types import SafetyAction, TelemetryFrame
+from src.core.geo import haversine_distance
 
 logger = logging.getLogger(__name__)
 
 
-class SafetyAction(IntEnum):
-    """Safety actions ordered by priority (higher = more urgent)."""
-    NONE = 0
-    WARN = 1
-    RTL_NOW = 2
-    EMERGENCY_LAND = 3
+# ──────────────────────────────────────────────────────────────
+# Concrete Safety Rules
+# ──────────────────────────────────────────────────────────────
+
+class BatteryRule(SafetyRule):
+    """Check battery level against thresholds."""
+
+    def __init__(
+        self, min_pct: float = 20.0, critical_pct: float = 10.0,
+    ) -> None:
+        self._min_pct = min_pct
+        self._critical_pct = critical_pct
+
+    @property
+    def name(self) -> str:
+        return "battery"
+
+    def evaluate(self, telemetry: TelemetryFrame) -> SafetyAction:
+        pct = telemetry.battery_percent
+        if pct <= 0:
+            return SafetyAction.NONE  # Data not available
+
+        if pct < self._critical_pct:
+            logger.warning(f"CRITICAL battery: {pct:.1f}%")
+            return SafetyAction.EMERGENCY_LAND
+
+        if pct < self._min_pct:
+            logger.warning(f"Low battery: {pct:.1f}%")
+            return SafetyAction.RTL_NOW
+
+        return SafetyAction.NONE
 
 
-class SafetyMonitor:
-    """Monitors simulated safety conditions.
-
-    Checks battery level, geofence boundary, altitude limit,
-    and SITL connection health.
-    """
+class GeofenceRule(SafetyRule):
+    """Check if drone is within geofence radius from home."""
 
     def __init__(
         self,
+        home_lat: float,
+        home_lon: float,
+        radius_m: float = 500.0,
+    ) -> None:
+        self._home_lat = home_lat
+        self._home_lon = home_lon
+        self._radius_m = radius_m
+
+    @property
+    def name(self) -> str:
+        return "geofence"
+
+    def evaluate(self, telemetry: TelemetryFrame) -> SafetyAction:
+        dist = haversine_distance(
+            self._home_lat, self._home_lon,
+            telemetry.position.latitude_deg,
+            telemetry.position.longitude_deg,
+        )
+
+        if dist > self._radius_m:
+            logger.warning(
+                f"GEOFENCE breach: {dist:.0f}m from home "
+                f"(limit: {self._radius_m:.0f}m)"
+            )
+            return SafetyAction.RTL_NOW
+
+        if dist > self._radius_m * 0.9:
+            logger.info(f"Approaching geofence: {dist:.0f}m from home")
+            return SafetyAction.WARN
+
+        return SafetyAction.NONE
+
+
+class AltitudeRule(SafetyRule):
+    """Check altitude limit."""
+
+    def __init__(self, max_altitude_m: float = 120.0) -> None:
+        self._max_altitude = max_altitude_m
+
+    @property
+    def name(self) -> str:
+        return "altitude"
+
+    def evaluate(self, telemetry: TelemetryFrame) -> SafetyAction:
+        alt = telemetry.position.relative_altitude_m
+
+        if alt > self._max_altitude:
+            logger.warning(
+                f"Altitude limit exceeded: {alt:.1f}m "
+                f"(max: {self._max_altitude:.1f}m)"
+            )
+            return SafetyAction.RTL_NOW
+
+        if alt > self._max_altitude * 0.9:
+            return SafetyAction.WARN
+
+        return SafetyAction.NONE
+
+
+class ConnectionRule(SafetyRule):
+    """Check SITL connection."""
+
+    @property
+    def name(self) -> str:
+        return "connection"
+
+    def evaluate(self, telemetry: TelemetryFrame) -> SafetyAction:
+        if not telemetry.is_connected:
+            logger.warning("Lost connection to PX4 SITL")
+            return SafetyAction.RTL_NOW
+        return SafetyAction.NONE
+
+
+# ──────────────────────────────────────────────────────────────
+# Composite SafetyMonitor
+# ──────────────────────────────────────────────────────────────
+
+class SafetyMonitor(SafetyChecker):
+    """Composite safety checker — runs all rules, returns worst action.
+
+    Implements the Chain of Responsibility pattern. New rules are
+    added via `add_rule()` — no existing code changes (OCP).
+
+    Usage:
+        monitor = SafetyMonitor.from_config(config)
+        action = monitor.check(telemetry_frame)
+    """
+
+    def __init__(self) -> None:
+        self._rules: List[SafetyRule] = []
+
+    # ── SafetyChecker interface ──────────────────────────────
+
+    def check(self, telemetry: TelemetryFrame) -> SafetyAction:
+        """Run all rules. Return the highest-priority action."""
+        return max(
+            (rule.evaluate(telemetry) for rule in self._rules),
+            default=SafetyAction.NONE,
+        )
+
+    def add_rule(self, rule: SafetyRule) -> None:
+        self._rules.append(rule)
+        logger.debug(f"Safety rule added: {rule.name}")
+
+    # ── Factory ──────────────────────────────────────────────
+
+    @classmethod
+    def from_config(
+        cls,
         geofence_radius_m: float = 500.0,
         max_altitude_m: float = 120.0,
         min_battery_pct: float = 20.0,
         critical_battery_pct: float = 10.0,
         home_lat: float = 47.397742,
         home_lon: float = 8.545594,
-    ):
-        self._geofence_radius = geofence_radius_m
-        self._max_altitude = max_altitude_m
-        self._min_battery = min_battery_pct
-        self._critical_battery = critical_battery_pct
-        self._home_lat = home_lat
-        self._home_lon = home_lon
+    ) -> SafetyMonitor:
+        """Create a SafetyMonitor with the standard rule set.
 
-    def check(self, telemetry: TelemetryFrame) -> SafetyAction:
-        """Run all safety checks. Returns highest-priority action.
-
-        Args:
-            telemetry: Current telemetry frame
-
-        Returns:
-            SafetyAction indicating required response
+        This factory method provides backward compatibility with the
+        old constructor signature.
         """
-        actions = [
-            self._check_battery(telemetry.battery_percent),
-            self._check_geofence(
-                telemetry.position.latitude_deg,
-                telemetry.position.longitude_deg,
-            ),
-            self._check_altitude(telemetry.position.relative_altitude_m),
-            self._check_connection(telemetry.is_connected),
-        ]
-
-        return max(actions)
-
-    def _check_battery(self, percent: float) -> SafetyAction:
-        """Check battery level."""
-        if percent <= 0:
-            return SafetyAction.NONE  # Battery data not available
-
-        if percent < self._critical_battery:
-            logger.warning(f"CRITICAL battery: {percent:.1f}%")
-            return SafetyAction.EMERGENCY_LAND
-
-        if percent < self._min_battery:
-            logger.warning(f"Low battery: {percent:.1f}%")
-            return SafetyAction.RTL_NOW
-
-        return SafetyAction.NONE
-
-    def _check_geofence(self, lat: float, lon: float) -> SafetyAction:
-        """Check if drone is within geofence radius from home."""
-        dist = self._haversine_distance(
-            self._home_lat, self._home_lon, lat, lon
-        )
-
-        if dist > self._geofence_radius:
-            logger.warning(
-                f"GEOFENCE breach: {dist:.0f}m from home "
-                f"(limit: {self._geofence_radius:.0f}m)"
-            )
-            return SafetyAction.RTL_NOW
-
-        if dist > self._geofence_radius * 0.9:
-            logger.info(f"Approaching geofence: {dist:.0f}m from home")
-            return SafetyAction.WARN
-
-        return SafetyAction.NONE
-
-    def _check_altitude(self, altitude_m: float) -> SafetyAction:
-        """Check altitude limit."""
-        if altitude_m > self._max_altitude:
-            logger.warning(
-                f"Altitude limit exceeded: {altitude_m:.1f}m "
-                f"(max: {self._max_altitude:.1f}m)"
-            )
-            return SafetyAction.RTL_NOW
-
-        if altitude_m > self._max_altitude * 0.9:
-            return SafetyAction.WARN
-
-        return SafetyAction.NONE
-
-    def _check_connection(self, is_connected: bool) -> SafetyAction:
-        """Check SITL connection."""
-        if not is_connected:
-            logger.warning("Lost connection to PX4 SITL")
-            return SafetyAction.RTL_NOW
-
-        return SafetyAction.NONE
-
-    @staticmethod
-    def _haversine_distance(
-        lat1: float, lon1: float, lat2: float, lon2: float
-    ) -> float:
-        """Calculate distance between two GPS points in meters."""
-        R = 6_371_000
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-        a = (
-            math.sin(dlat / 2) ** 2
-            + math.cos(math.radians(lat1))
-            * math.cos(math.radians(lat2))
-            * math.sin(dlon / 2) ** 2
-        )
-        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        monitor = cls()
+        monitor.add_rule(BatteryRule(min_battery_pct, critical_battery_pct))
+        monitor.add_rule(GeofenceRule(home_lat, home_lon, geofence_radius_m))
+        monitor.add_rule(AltitudeRule(max_altitude_m))
+        monitor.add_rule(ConnectionRule())
+        return monitor

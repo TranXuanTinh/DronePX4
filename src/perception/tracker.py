@@ -1,46 +1,30 @@
 """
-Tracker — ByteTrack multi-object tracking wrapper.
+Tracker — ByteTrack implementation of ObjectTracker.
 
-Provides persistent track IDs across frames for detected objects.
-Lightweight and fast — no ReID network needed.
+Provides persistent track IDs across frames using a simplified
+ByteTrack-style IoU matching algorithm.
 """
+from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 import numpy as np
+
+from src.core.interfaces import ObjectTracker
+from src.core.types import Detection, Track
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class Track:
-    """A tracked object with persistent ID."""
-    track_id: int
-    bbox: np.ndarray         # [x1, y1, x2, y2]
-    class_id: int
-    class_name: str
-    confidence: float
-    age: int                 # Number of frames this track has existed
-    is_confirmed: bool       # Whether track has enough history
-
-    @property
-    def center(self) -> tuple[int, int]:
-        return (
-            int((self.bbox[0] + self.bbox[2]) / 2),
-            int((self.bbox[1] + self.bbox[3]) / 2),
-        )
-
-
-class ByteTrackWrapper:
+class ByteTrackWrapper(ObjectTracker):
     """Multi-object tracker using a simplified ByteTrack-style algorithm.
 
-    ByteTrack associates detections to tracks using IoU matching
-    in two rounds: high-confidence matches first, then low-confidence.
+    Implements the ObjectTracker interface. Associates detections to
+    tracks using IoU matching in a greedy fashion.
 
-    For simulation, we use a simplified implementation. For production,
-    swap with the full ByteTrack library.
+    For production, swap with the full ByteTrack library by implementing
+    the same ObjectTracker interface.
     """
 
     def __init__(
@@ -49,7 +33,7 @@ class ByteTrackWrapper:
         match_thresh: float = 0.8,
         track_buffer: int = 30,
         frame_rate: int = 10,
-    ):
+    ) -> None:
         self._track_thresh = track_thresh
         self._match_thresh = match_thresh
         self._track_buffer = track_buffer
@@ -59,36 +43,29 @@ class ByteTrackWrapper:
         self._next_id = 1
         self._frame_count = 0
 
+    # ── ObjectTracker interface ──────────────────────────────
+
     def update(self, detections: list) -> List[Track]:
-        """Update tracks with new detections.
-
-        Args:
-            detections: List of Detection objects from the detector.
-
-        Returns:
-            List of active Track objects with persistent IDs.
-        """
         self._frame_count += 1
 
         if not detections:
-            # Age out existing tracks
             self._age_tracks()
             return self._get_active_tracks()
 
-        # Build detection matrix: [N, 5] = [x1, y1, x2, y2, score]
         det_bboxes = np.array([d.bbox for d in detections])
         det_scores = np.array([d.confidence for d in detections])
 
-        # Match detections to existing tracks using IoU
         matched, unmatched_dets, unmatched_tracks = self._match(
-            det_bboxes, det_scores
+            det_bboxes, det_scores,
         )
 
         # Update matched tracks
         for track_idx, det_idx in matched:
             track_id = list(self._tracks.keys())[track_idx]
             det = detections[det_idx]
-            self._tracks[track_id].update(det.bbox, det.confidence, det.class_id, det.class_name)
+            self._tracks[track_id].update(
+                det.bbox, det.confidence, det.class_id, det.class_name,
+            )
 
         # Create new tracks for unmatched detections
         for det_idx in unmatched_dets:
@@ -108,27 +85,29 @@ class ByteTrackWrapper:
             track_id = list(self._tracks.keys())[track_idx]
             self._tracks[track_id].miss()
 
-        # Remove dead tracks
         self._remove_dead_tracks()
-
         return self._get_active_tracks()
+
+    def reset(self) -> None:
+        self._tracks.clear()
+        self._next_id = 1
+        self._frame_count = 0
+
+    # ── Matching ─────────────────────────────────────────────
 
     def _match(self, det_bboxes, det_scores):
         """Match detections to existing tracks using IoU."""
         if not self._tracks or len(det_bboxes) == 0:
-            unmatched_dets = list(range(len(det_bboxes)))
-            return [], unmatched_dets, []
+            return [], list(range(len(det_bboxes))), []
 
         track_bboxes = np.array([t.bbox for t in self._tracks.values()])
-
-        # Compute IoU matrix
         iou_matrix = self._compute_iou(track_bboxes, det_bboxes)
 
         matched = []
         unmatched_dets = list(range(len(det_bboxes)))
         unmatched_tracks = list(range(len(track_bboxes)))
 
-        # Greedy matching (simplified; production uses Hungarian algorithm)
+        # Greedy matching
         while True:
             if iou_matrix.size == 0:
                 break
@@ -137,11 +116,10 @@ class ByteTrackWrapper:
                 break
 
             track_idx, det_idx = np.unravel_index(
-                iou_matrix.argmax(), iou_matrix.shape
+                iou_matrix.argmax(), iou_matrix.shape,
             )
 
             matched.append((track_idx, det_idx))
-
             if track_idx in unmatched_tracks:
                 unmatched_tracks.remove(track_idx)
             if det_idx in unmatched_dets:
@@ -153,7 +131,9 @@ class ByteTrackWrapper:
         return matched, unmatched_dets, unmatched_tracks
 
     @staticmethod
-    def _compute_iou(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
+    def _compute_iou(
+        boxes_a: np.ndarray, boxes_b: np.ndarray,
+    ) -> np.ndarray:
         """Compute IoU between two sets of bboxes. Shape: (N, M)."""
         x1 = np.maximum(boxes_a[:, 0:1], boxes_b[:, 0].T)
         y1 = np.maximum(boxes_a[:, 1:2], boxes_b[:, 1].T)
@@ -162,21 +142,26 @@ class ByteTrackWrapper:
 
         intersection = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
 
-        area_a = (boxes_a[:, 2] - boxes_a[:, 0]) * (boxes_a[:, 3] - boxes_a[:, 1])
-        area_b = (boxes_b[:, 2] - boxes_b[:, 0]) * (boxes_b[:, 3] - boxes_b[:, 1])
+        area_a = (
+            (boxes_a[:, 2] - boxes_a[:, 0])
+            * (boxes_a[:, 3] - boxes_a[:, 1])
+        )
+        area_b = (
+            (boxes_b[:, 2] - boxes_b[:, 0])
+            * (boxes_b[:, 3] - boxes_b[:, 1])
+        )
 
         union = area_a[:, None] + area_b[None, :] - intersection
-
         return intersection / (union + 1e-6)
 
-    def _age_tracks(self):
-        """Increment miss count for all tracks."""
+    # ── Track management ─────────────────────────────────────
+
+    def _age_tracks(self) -> None:
         for track in self._tracks.values():
             track.miss()
         self._remove_dead_tracks()
 
-    def _remove_dead_tracks(self):
-        """Remove tracks that haven't been updated recently."""
+    def _remove_dead_tracks(self) -> None:
         dead_ids = [
             tid for tid, t in self._tracks.items()
             if t.miss_count > self._track_buffer
@@ -185,7 +170,6 @@ class ByteTrackWrapper:
             del self._tracks[tid]
 
     def _get_active_tracks(self) -> List[Track]:
-        """Get list of currently active tracks."""
         return [
             Track(
                 track_id=t.track_id,
@@ -197,23 +181,22 @@ class ByteTrackWrapper:
                 is_confirmed=t.age >= 3,
             )
             for t in self._tracks.values()
-            if t.miss_count == 0  # Only return tracks updated this frame
+            if t.miss_count == 0
         ]
-
-    def reset(self):
-        """Clear all tracks."""
-        self._tracks.clear()
-        self._next_id = 1
-        self._frame_count = 0
 
 
 class _TrackState:
-    """Internal track state (not exposed to consumers)."""
+    """Internal mutable track state (not exposed to consumers)."""
+
+    __slots__ = (
+        "track_id", "bbox", "confidence", "class_id",
+        "class_name", "age", "miss_count",
+    )
 
     def __init__(
         self, track_id: int, bbox: np.ndarray,
-        confidence: float, class_id: int, class_name: str
-    ):
+        confidence: float, class_id: int, class_name: str,
+    ) -> None:
         self.track_id = track_id
         self.bbox = bbox.copy()
         self.confidence = confidence
@@ -222,9 +205,10 @@ class _TrackState:
         self.age = 1
         self.miss_count = 0
 
-    def update(self, bbox: np.ndarray, confidence: float,
-               class_id: int, class_name: str):
-        """Update track with new detection."""
+    def update(
+        self, bbox: np.ndarray, confidence: float,
+        class_id: int, class_name: str,
+    ) -> None:
         self.bbox = bbox.copy()
         self.confidence = confidence
         self.class_id = class_id
@@ -232,6 +216,5 @@ class _TrackState:
         self.age += 1
         self.miss_count = 0
 
-    def miss(self):
-        """Track was not matched in this frame."""
+    def miss(self) -> None:
         self.miss_count += 1

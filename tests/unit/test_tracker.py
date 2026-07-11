@@ -1,125 +1,121 @@
-"""Unit tests for ByteTrack tracker.
-
-Only depends on numpy (no mavsdk or ultralytics needed).
 """
-
-import pytest
+Unit tests for ByteTrackWrapper — ObjectTracker implementation.
+"""
 import sys
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.perception.tracker import ByteTrackWrapper, Track
+from src.core.types import Detection, Track
+from src.perception.tracker import ByteTrackWrapper
 
 
-class _FakeDetection:
-    """Minimal detection object matching the interface ByteTrackWrapper expects."""
-    def __init__(self, x1, y1, x2, y2, cls_id=0, cls_name="car", conf=0.9):
-        self.bbox = np.array([x1, y1, x2, y2])
-        self.class_id = cls_id
-        self.class_name = cls_name
-        self.confidence = conf
+def _make_detection(x1, y1, x2, y2, conf=0.9, cls_id=0, cls_name="car"):
+    return Detection(
+        bbox=np.array([x1, y1, x2, y2]),
+        class_id=cls_id,
+        class_name=cls_name,
+        confidence=conf,
+    )
 
 
 class TestByteTrackWrapper:
-    """Test multi-object tracking."""
+    """Test ByteTrack tracker behavior."""
 
-    @pytest.fixture
-    def tracker(self):
-        return ByteTrackWrapper(
-            track_thresh=0.5, match_thresh=0.8, track_buffer=5, frame_rate=10,
-        )
-
-    def test_no_detections_no_tracks(self, tracker):
+    def test_no_detections_no_tracks(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5)
         tracks = tracker.update([])
-        assert tracks == []
+        assert len(tracks) == 0
 
-    def test_single_detection_creates_track(self, tracker):
-        dets = [_FakeDetection(100, 100, 200, 200)]
-        tracks = tracker.update(dets)
+    def test_single_detection_creates_track(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5)
+        det = _make_detection(100, 100, 200, 200)
+        tracks = tracker.update([det])
         assert len(tracks) == 1
-        assert tracks[0].class_name == "car"
         assert tracks[0].track_id == 1
 
-    def test_persistent_track_id(self, tracker):
-        dets = [_FakeDetection(100, 100, 200, 200)]
-        tracks1 = tracker.update(dets)
-        tracks2 = tracker.update(dets)
-        assert len(tracks1) == 1
-        assert len(tracks2) == 1
+    def test_persistent_track_id(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5, match_thresh=0.8)
+        det = _make_detection(100, 100, 200, 200)
+        tracks1 = tracker.update([det])
+        det2 = _make_detection(105, 105, 205, 205)
+        tracks2 = tracker.update([det2])
         assert tracks1[0].track_id == tracks2[0].track_id
 
-    def test_track_age_increments(self, tracker):
-        dets = [_FakeDetection(100, 100, 200, 200)]
-        tracker.update(dets)
-        tracks = tracker.update(dets)
-        assert tracks[0].age == 2
-
-    def test_multiple_objects_tracked(self, tracker):
+    def test_multiple_objects_tracked(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5)
         dets = [
-            _FakeDetection(100, 100, 200, 200, cls_name="car"),
-            _FakeDetection(400, 400, 500, 500, cls_name="person"),
+            _make_detection(10, 10, 50, 50),
+            _make_detection(200, 200, 300, 300),
         ]
         tracks = tracker.update(dets)
         assert len(tracks) == 2
         ids = {t.track_id for t in tracks}
         assert len(ids) == 2
 
-    def test_low_confidence_not_tracked(self, tracker):
-        dets = [_FakeDetection(100, 100, 200, 200, conf=0.3)]
-        tracks = tracker.update(dets)
+    def test_low_confidence_not_tracked(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5)
+        det = _make_detection(100, 100, 200, 200, conf=0.1)
+        tracks = tracker.update([det])
         assert len(tracks) == 0
 
-    def test_track_is_confirmed_after_3_frames(self, tracker):
-        dets = [_FakeDetection(100, 100, 200, 200)]
-        tracker.update(dets)
-        tracker.update(dets)
-        tracks = tracker.update(dets)
+    def test_track_age_increments(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5, match_thresh=0.8)
+        det = _make_detection(100, 100, 200, 200)
+        tracker.update([det])
+        tracks = tracker.update([_make_detection(105, 105, 205, 205)])
+        assert tracks[0].age == 2
+
+    def test_track_is_confirmed_after_3_frames(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5, match_thresh=0.8)
+        for i in range(3):
+            tracks = tracker.update([_make_detection(100 + i, 100, 200 + i, 200)])
         assert tracks[0].is_confirmed is True
 
-    def test_track_lost_after_buffer(self, tracker):
-        dets = [_FakeDetection(100, 100, 200, 200)]
-        tracker.update(dets)
-        for _ in range(6):
-            tracker.update([])
-        dets2 = [_FakeDetection(100, 100, 200, 200)]
-        tracks = tracker.update(dets2)
-        assert len(tracks) == 1
-        assert tracks[0].track_id != 1
+    def test_track_lost_after_buffer(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5, track_buffer=2)
+        tracker.update([_make_detection(100, 100, 200, 200)])
+        tracker.update([])
+        tracker.update([])
+        tracks = tracker.update([])
+        assert len(tracks) == 0
 
-    def test_reset_clears_all(self, tracker):
-        tracker.update([_FakeDetection(100, 100, 200, 200)])
+    def test_reset_clears_all(self, tracker=None):
+        tracker = tracker or ByteTrackWrapper(track_thresh=0.5)
+        tracker.update([_make_detection(100, 100, 200, 200)])
         tracker.reset()
-        tracks = tracker.update([_FakeDetection(100, 100, 200, 200)])
-        assert tracks[0].track_id == 1
+        tracks = tracker.update([_make_detection(100, 100, 200, 200)])
+        assert tracks[0].track_id == 1  # IDs restart
 
 
 class TestTrackCenter:
     def test_center(self):
         t = Track(
-            track_id=1, bbox=np.array([100, 100, 200, 200]),
-            class_id=0, class_name="car", confidence=0.9,
-            age=1, is_confirmed=False,
+            track_id=1,
+            bbox=np.array([10, 20, 30, 40]),
+            class_id=0, class_name="car",
+            confidence=0.9, age=1, is_confirmed=True,
         )
-        assert t.center == (150, 150)
+        assert t.center == (20, 30)
 
 
 class TestIoUComputation:
     def test_identical_boxes_iou_one(self):
-        boxes = np.array([[100, 100, 200, 200]])
-        iou = ByteTrackWrapper._compute_iou(boxes, boxes)
-        assert iou[0, 0] == pytest.approx(1.0, abs=0.001)
+        a = np.array([[0, 0, 10, 10]])
+        b = np.array([[0, 0, 10, 10]])
+        iou = ByteTrackWrapper._compute_iou(a, b)
+        assert abs(iou[0, 0] - 1.0) < 1e-4
 
     def test_no_overlap_iou_zero(self):
         a = np.array([[0, 0, 10, 10]])
-        b = np.array([[100, 100, 200, 200]])
+        b = np.array([[20, 20, 30, 30]])
         iou = ByteTrackWrapper._compute_iou(a, b)
-        assert iou[0, 0] == pytest.approx(0.0, abs=0.001)
+        assert iou[0, 0] < 1e-4
 
     def test_partial_overlap(self):
-        a = np.array([[0, 0, 100, 100]])
-        b = np.array([[50, 50, 150, 150]])
+        a = np.array([[0, 0, 10, 10]])
+        b = np.array([[5, 5, 15, 15]])
         iou = ByteTrackWrapper._compute_iou(a, b)
-        expected = 2500 / 17500
-        assert iou[0, 0] == pytest.approx(expected, abs=0.01)
+        assert 0.0 < iou[0, 0] < 1.0

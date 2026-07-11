@@ -1,41 +1,27 @@
 """
-Geotagging — Project pixel detections to GPS coordinates.
+Geotagging — implementation of Geotagger interface.
 
 Uses the drone's GPS position, altitude, heading, and camera intrinsics
-to estimate the ground-plane GPS location of each detection.
+to estimate the ground-plane GPS location of each detection via
+pinhole camera projection.
 """
+from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
 from typing import List, Tuple
 
-import numpy as np
-
-from src.perception.tracker import Track
+from src.core.interfaces import Geotagger
+from src.core.types import Track, GeotaggedDetection
+from src.core.geo import EARTH_RADIUS_M
 
 logger = logging.getLogger(__name__)
 
-# Earth radius in meters (WGS84 approximation)
-EARTH_RADIUS_M = 6_371_000.0
 
-
-@dataclass
-class GeotaggedDetection:
-    """A tracked detection with estimated GPS coordinates."""
-    track_id: int
-    class_name: str
-    confidence: float
-    bbox: np.ndarray          # [x1, y1, x2, y2] in pixels
-    pixel_center: tuple[int, int]
-    latitude_deg: float       # Estimated ground GPS
-    longitude_deg: float
-    drone_altitude_m: float
-    timestamp: float
-
-
-class GPSGeotagger:
+class GPSGeotagger(Geotagger):
     """Projects pixel coordinates to GPS using pinhole camera model.
+
+    Implements the Geotagger interface.
 
     Assumes:
     - Downward-facing (nadir) camera
@@ -48,7 +34,7 @@ class GPSGeotagger:
         camera_hfov_deg: float = 60.0,
         image_width: int = 640,
         image_height: int = 480,
-    ):
+    ) -> None:
         self._hfov_rad = math.radians(camera_hfov_deg)
         self._img_w = image_width
         self._img_h = image_height
@@ -65,6 +51,41 @@ class GPSGeotagger:
             f"image={image_width}x{image_height}"
         )
 
+    # ── Geotagger interface ──────────────────────────────────
+
+    def tag_detections(
+        self,
+        tracks: List[Track],
+        drone_lat: float,
+        drone_lon: float,
+        drone_alt: float,
+        drone_heading_deg: float,
+        timestamp: float,
+    ) -> List[GeotaggedDetection]:
+        geotagged = []
+
+        for track in tracks:
+            cx, cy = track.center
+            lat, lon = self.pixel_to_gps(
+                cx, cy, drone_lat, drone_lon, drone_alt, drone_heading_deg,
+            )
+
+            geotagged.append(GeotaggedDetection(
+                track_id=track.track_id,
+                class_name=track.class_name,
+                confidence=track.confidence,
+                bbox=track.bbox,
+                pixel_center=(cx, cy),
+                latitude_deg=lat,
+                longitude_deg=lon,
+                drone_altitude_m=drone_alt,
+                timestamp=timestamp,
+            ))
+
+        return geotagged
+
+    # ── Projection ───────────────────────────────────────────
+
     def pixel_to_gps(
         self,
         pixel_x: int,
@@ -76,19 +97,19 @@ class GPSGeotagger:
     ) -> Tuple[float, float]:
         """Convert pixel coordinates to GPS coordinates.
 
-        Projects the pixel through the camera frustum onto the ground plane,
-        then offsets from the drone's GPS position.
+        Projects the pixel through the camera frustum onto the ground
+        plane, then offsets from the drone's GPS position.
 
         Args:
-            pixel_x: Pixel X coordinate (0 = left)
-            pixel_y: Pixel Y coordinate (0 = top)
-            drone_lat: Drone latitude in degrees
-            drone_lon: Drone longitude in degrees
-            drone_alt: Drone altitude above ground in meters
-            drone_heading_deg: Drone heading (0=North, 90=East)
+            pixel_x: Pixel X coordinate (0 = left).
+            pixel_y: Pixel Y coordinate (0 = top).
+            drone_lat: Drone latitude in degrees.
+            drone_lon: Drone longitude in degrees.
+            drone_alt: Drone altitude above ground in meters.
+            drone_heading_deg: Drone heading (0=North, 90=East).
 
         Returns:
-            Tuple of (latitude_deg, longitude_deg) of the ground point.
+            Tuple of (latitude_deg, longitude_deg).
         """
         if drone_alt <= 0:
             return drone_lat, drone_lon
@@ -103,7 +124,8 @@ class GPSGeotagger:
 
         # Ground offset in meters (flat ground approximation)
         offset_right_m = drone_alt * math.tan(angle_x)
-        offset_forward_m = -drone_alt * math.tan(angle_y)  # Negative because y-axis is inverted
+        # Negative because y-axis is inverted
+        offset_forward_m = -drone_alt * math.tan(angle_y)
 
         # Rotate by heading to get North/East offsets
         heading_rad = math.radians(drone_heading_deg)
@@ -117,55 +139,13 @@ class GPSGeotagger:
         )
 
         # Convert meter offsets to GPS degrees
-        lat_offset = offset_north_m / EARTH_RADIUS_M * (180 / math.pi)
-        lon_offset = offset_east_m / (
-            EARTH_RADIUS_M * math.cos(math.radians(drone_lat))
-        ) * (180 / math.pi)
+        lat_offset = (
+            offset_north_m / EARTH_RADIUS_M * (180 / math.pi)
+        )
+        lon_offset = (
+            offset_east_m
+            / (EARTH_RADIUS_M * math.cos(math.radians(drone_lat)))
+            * (180 / math.pi)
+        )
 
         return drone_lat + lat_offset, drone_lon + lon_offset
-
-    def tag_detections(
-        self,
-        tracks: List[Track],
-        drone_lat: float,
-        drone_lon: float,
-        drone_alt: float,
-        drone_heading_deg: float,
-        timestamp: float,
-    ) -> List[GeotaggedDetection]:
-        """Add GPS coordinates to each tracked detection.
-
-        Args:
-            tracks: List of Track objects from the tracker
-            drone_lat: Current drone latitude
-            drone_lon: Current drone longitude
-            drone_alt: Current altitude above ground (meters)
-            drone_heading_deg: Current heading
-            timestamp: Frame timestamp
-
-        Returns:
-            List of GeotaggedDetection objects
-        """
-        geotagged = []
-
-        for track in tracks:
-            cx, cy = track.center
-            lat, lon = self.pixel_to_gps(
-                cx, cy, drone_lat, drone_lon, drone_alt, drone_heading_deg
-            )
-
-            geotagged.append(
-                GeotaggedDetection(
-                    track_id=track.track_id,
-                    class_name=track.class_name,
-                    confidence=track.confidence,
-                    bbox=track.bbox,
-                    pixel_center=(cx, cy),
-                    latitude_deg=lat,
-                    longitude_deg=lon,
-                    drone_altitude_m=drone_alt,
-                    timestamp=timestamp,
-                )
-            )
-
-        return geotagged

@@ -1,10 +1,13 @@
 """
-Camera — Gazebo simulated camera capture via OpenCV.
+Camera sources — CameraSource implementations (LSP-compliant).
 
-Reads frames from Gazebo's camera sensor plugin.
-In simulation, we use OpenCV VideoCapture on a GStreamer URI
-or read from Gazebo transport topic.
+Splits the old monolithic GazeboCamera into proper subclasses:
+- GstreamerCamera: Gazebo GStreamer pipeline
+- VideoFileCamera: Video file playback
+- TestPatternCamera: Synthetic frames for development
+- CameraFactory: Factory method for config-driven creation
 """
+from __future__ import annotations
 
 import logging
 import time
@@ -13,122 +16,131 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+from src.core.interfaces import CameraSource
+
 logger = logging.getLogger(__name__)
 
 
-class GazeboCamera:
-    """Captures frames from Gazebo's simulated camera sensor.
+# ──────────────────────────────────────────────────────────────
+# Concrete Implementations
+# ──────────────────────────────────────────────────────────────
 
-    Supports multiple capture backends:
-    1. Gazebo transport topic (via gz-transport Python bindings)
-    2. GStreamer pipeline reading Gazebo video output
-    3. Shared memory / OpenCV bridge
+class GstreamerCamera(CameraSource):
+    """Captures frames from Gazebo via GStreamer pipeline."""
 
-    For initial development, uses a simple OpenCV VideoCapture
-    approach or reads from a video file for testing.
-    """
-
-    def __init__(
-        self,
-        source: str = "gazebo",
-        width: int = 640,
-        height: int = 480,
-        fps: int = 15,
-    ):
-        self._source = source
+    def __init__(self, width: int = 640, height: int = 480) -> None:
         self._width = width
         self._height = height
-        self._fps = fps
         self._cap: Optional[cv2.VideoCapture] = None
-        self._latest_frame: Optional[np.ndarray] = None
         self._frame_count = 0
 
     def open(self) -> bool:
-        """Open the camera source.
-
-        Returns:
-            True if camera opened successfully.
-        """
-        if self._source == "gazebo":
-            # For Gazebo, we'll use the gz-transport topic
-            # Fallback: use GStreamer pipeline to read from Gazebo
-            pipeline = (
-                f"udpsrc port=5600 "
-                f"! application/x-rtp,encoding-name=H264 "
-                f"! rtph264depay ! avdec_h264 "
-                f"! videoconvert ! video/x-raw,format=BGR "
-                f"! appsink drop=1"
-            )
-            self._cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-
-            if not self._cap.isOpened():
-                logger.warning(
-                    "GStreamer pipeline failed. "
-                    "Falling back to test pattern generator."
-                )
-                self._cap = None
-                return True  # Will use test pattern
-
+        pipeline = (
+            f"udpsrc port=5600 "
+            f"! application/x-rtp,encoding-name=H264 "
+            f"! rtph264depay ! avdec_h264 "
+            f"! videoconvert ! video/x-raw,format=BGR "
+            f"! appsink drop=1"
+        )
+        self._cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        if self._cap.isOpened():
             logger.info("Gazebo camera opened via GStreamer")
             return True
-
-        elif self._source.endswith((".mp4", ".avi", ".mkv")):
-            # Video file for testing
-            self._cap = cv2.VideoCapture(self._source)
-            if self._cap.isOpened():
-                logger.info(f"Opened video file: {self._source}")
-                return True
-            logger.error(f"Failed to open video: {self._source}")
-            return False
-
-        elif self._source.isdigit():
-            # Webcam index
-            self._cap = cv2.VideoCapture(int(self._source))
-            if self._cap.isOpened():
-                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
-                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-                logger.info(f"Opened webcam: {self._source}")
-                return True
-            return False
-
-        else:
-            logger.warning(f"Unknown source '{self._source}', using test pattern")
-            return True
+        logger.warning("GStreamer pipeline failed to open")
+        self._cap = None
+        return False
 
     def get_frame(self) -> Optional[np.ndarray]:
-        """Capture a single frame.
-
-        Returns:
-            BGR numpy array, or None if capture failed.
-        """
         if self._cap and self._cap.isOpened():
             ret, frame = self._cap.read()
             if ret:
-                self._latest_frame = frame
                 self._frame_count += 1
                 return frame
-            return None
+        return None
 
-        # Fallback: generate a test pattern for development
+    def release(self) -> None:
+        if self._cap:
+            self._cap.release()
+            self._cap = None
+        logger.info("GStreamer camera released")
+
+    @property
+    def frame_count(self) -> int:
+        return self._frame_count
+
+
+class VideoFileCamera(CameraSource):
+    """Captures frames from a video file (for testing)."""
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._cap: Optional[cv2.VideoCapture] = None
+        self._frame_count = 0
+
+    def open(self) -> bool:
+        self._cap = cv2.VideoCapture(self._path)
+        if self._cap.isOpened():
+            logger.info(f"Opened video file: {self._path}")
+            return True
+        logger.error(f"Failed to open video: {self._path}")
+        return False
+
+    def get_frame(self) -> Optional[np.ndarray]:
+        if self._cap and self._cap.isOpened():
+            ret, frame = self._cap.read()
+            if ret:
+                self._frame_count += 1
+                return frame
+            # Loop video
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        return None
+
+    def release(self) -> None:
+        if self._cap:
+            self._cap.release()
+            self._cap = None
+        logger.info("Video file camera released")
+
+    @property
+    def frame_count(self) -> int:
+        return self._frame_count
+
+
+class TestPatternCamera(CameraSource):
+    """Generates synthetic test frames for development without Gazebo.
+
+    Creates frames with gradient background and colored rectangles
+    that simulate detectable objects.
+    """
+
+    def __init__(self, width: int = 640, height: int = 480) -> None:
+        self._width = width
+        self._height = height
+        self._frame_count = 0
+        self._opened = False
+
+    def open(self) -> bool:
+        self._opened = True
+        logger.info(
+            f"Test pattern camera opened ({self._width}x{self._height})"
+        )
+        return True
+
+    def get_frame(self) -> Optional[np.ndarray]:
+        if not self._opened:
+            return None
         return self._generate_test_frame()
 
-    def get_frame_with_timestamp(self) -> Tuple[Optional[np.ndarray], float]:
-        """Capture a frame with timestamp.
+    def release(self) -> None:
+        self._opened = False
+        logger.info("Test pattern camera released")
 
-        Returns:
-            Tuple of (frame, timestamp) where timestamp is time.time().
-        """
-        frame = self.get_frame()
-        return frame, time.time()
+    @property
+    def frame_count(self) -> int:
+        return self._frame_count
 
     def _generate_test_frame(self) -> np.ndarray:
-        """Generate a synthetic test frame for development without Gazebo.
-
-        Creates a frame with:
-        - Gradient background (simulating terrain)
-        - Colored rectangles (simulating detectable objects)
-        - Frame counter overlay
-        """
+        """Generate a synthetic test frame."""
         frame = np.zeros((self._height, self._width, 3), dtype=np.uint8)
 
         # Gradient background (green terrain)
@@ -138,9 +150,9 @@ class GazeboCamera:
 
         # Simulated objects at fixed positions
         objects = [
-            ((100, 150, 180, 230), (0, 0, 200), "car"),      # Red box
-            ((300, 200, 380, 280), (200, 200, 0), "person"),  # Cyan box
-            ((450, 100, 530, 180), (0, 200, 200), "truck"),   # Yellow box
+            ((100, 150, 180, 230), (0, 0, 200), "car"),
+            ((300, 200, 380, 280), (200, 200, 0), "person"),
+            ((450, 100, 530, 180), (0, 200, 200), "truck"),
         ]
 
         # Add slight movement based on frame count
@@ -152,7 +164,6 @@ class GazeboCamera:
             y1 = max(0, y1 + offset_y)
             x2 = min(self._width, x2 + offset_x)
             y2 = min(self._height, y2 + offset_y)
-
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
             cv2.putText(
                 frame, label, (x1, y1 - 5),
@@ -164,28 +175,62 @@ class GazeboCamera:
             frame,
             f"SIM Frame #{self._frame_count}",
             (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
         )
 
-        self._latest_frame = frame
         self._frame_count += 1
         return frame
 
-    @property
-    def latest_frame(self) -> Optional[np.ndarray]:
-        """Get the last captured frame without capturing a new one."""
-        return self._latest_frame
 
-    @property
-    def frame_count(self) -> int:
-        return self._frame_count
+# ──────────────────────────────────────────────────────────────
+# Factory
+# ──────────────────────────────────────────────────────────────
 
-    def release(self) -> None:
-        """Release camera resources."""
-        if self._cap:
-            self._cap.release()
-            self._cap = None
-        logger.info("Camera released")
+class CameraFactory:
+    """Factory for creating camera sources from configuration.
+
+    Eliminates the if/elif/else chain that violated LSP in the
+    old GazeboCamera class.
+    """
+
+    @staticmethod
+    def create(source: str = "gazebo", **kwargs) -> CameraSource:
+        """Create a camera source based on configuration.
+
+        Args:
+            source: Camera source type — "gazebo", a video file path,
+                    or "test" for synthetic frames.
+            **kwargs: Additional arguments (width, height, etc.)
+
+        Returns:
+            A CameraSource implementation.
+        """
+        width = kwargs.get("width", 640)
+        height = kwargs.get("height", 480)
+
+        if source == "gazebo":
+            cam = GstreamerCamera(width=width, height=height)
+            if cam.open():
+                return cam
+            # Fallback to test pattern if GStreamer fails
+            logger.warning("Falling back to test pattern camera")
+            fallback = TestPatternCamera(width=width, height=height)
+            fallback.open()
+            return fallback
+
+        if source.endswith((".mp4", ".avi", ".mkv")):
+            return VideoFileCamera(path=source)
+
+        if source == "test":
+            return TestPatternCamera(width=width, height=height)
+
+        logger.warning(f"Unknown source '{source}', using test pattern")
+        return TestPatternCamera(width=width, height=height)
+
+
+# ──────────────────────────────────────────────────────────────
+# Backward Compatibility Alias
+# ──────────────────────────────────────────────────────────────
+
+# Old code used `GazeboCamera(source="gazebo")`. Keep it working.
+GazeboCamera = CameraFactory.create

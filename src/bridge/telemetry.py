@@ -1,31 +1,44 @@
 """
-Telemetry — Dedicated telemetry data collector and publisher.
+Telemetry Collector — distributes telemetry via EventBus.
 
-Provides an async queue-based interface for other modules
-(dashboard, safety monitor) to consume telemetry data.
+Uses the Observer pattern (EventBus) instead of manual queue-based
+subscriber management. Also retains the legacy queue-based API for
+backward compatibility with WebSocket endpoints.
 """
+from __future__ import annotations
 
 import asyncio
 import logging
 from typing import Optional
 
-from src.bridge.mavlink_bridge import MAVLinkBridge, TelemetryFrame
+from src.core.interfaces import DroneConnector
+from src.core.types import TelemetryFrame, TelemetryEvent
+from src.core.events import EventBus
 
 logger = logging.getLogger(__name__)
 
 
 class TelemetryCollector:
-    """Collects telemetry from MAVLink bridge and distributes to subscribers.
+    """Collects telemetry from a DroneConnector and distributes it.
 
-    Provides an async queue for each subscriber, ensuring no data is lost
-    and each consumer gets every update.
+    Two distribution mechanisms (both active simultaneously):
+    1. EventBus (Observer pattern) — preferred for new consumers.
+    2. Queue-based subscription — retained for WebSocket streaming.
     """
 
-    def __init__(self, bridge: MAVLinkBridge, max_queue_size: int = 100):
-        self._bridge = bridge
+    def __init__(
+        self,
+        connector: DroneConnector,
+        event_bus: Optional[EventBus] = None,
+        max_queue_size: int = 100,
+    ) -> None:
+        self._connector = connector
+        self._event_bus = event_bus
         self._subscribers: list[asyncio.Queue[TelemetryFrame]] = []
         self._max_queue_size = max_queue_size
         self._running = False
+
+    # ── Queue-based API (WebSocket compat) ───────────────────
 
     def subscribe(self) -> asyncio.Queue[TelemetryFrame]:
         """Create a new subscriber queue.
@@ -34,10 +47,12 @@ class TelemetryCollector:
             An asyncio.Queue that will receive TelemetryFrame updates.
         """
         queue: asyncio.Queue[TelemetryFrame] = asyncio.Queue(
-            maxsize=self._max_queue_size
+            maxsize=self._max_queue_size,
         )
         self._subscribers.append(queue)
-        logger.debug(f"New telemetry subscriber (total: {len(self._subscribers)})")
+        logger.debug(
+            f"New telemetry subscriber (total: {len(self._subscribers)})"
+        )
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue[TelemetryFrame]) -> None:
@@ -45,37 +60,46 @@ class TelemetryCollector:
         if queue in self._subscribers:
             self._subscribers.remove(queue)
             logger.debug(
-                f"Telemetry subscriber removed (total: {len(self._subscribers)})"
+                f"Telemetry subscriber removed "
+                f"(total: {len(self._subscribers)})"
             )
 
-    async def _on_telemetry(self, frame: TelemetryFrame) -> None:
-        """Callback from MAVLink bridge — distributes to all subscribers."""
-        for queue in self._subscribers:
-            try:
-                queue.put_nowait(frame)
-            except asyncio.QueueFull:
-                # Drop oldest if full (non-blocking)
-                try:
-                    queue.get_nowait()
-                    queue.put_nowait(frame)
-                except asyncio.QueueEmpty:
-                    pass
+    # ── Lifecycle ────────────────────────────────────────────
 
     async def start(self, rate_hz: float = 10.0) -> None:
-        """Start collecting telemetry from the bridge."""
+        """Start collecting telemetry from the connector."""
         self._running = True
-        await self._bridge.start_telemetry_stream(
-            rate_hz=rate_hz, callback=self._on_telemetry
+        await self._connector.start_telemetry_stream(
+            rate_hz=rate_hz, callback=self._on_telemetry,
         )
         logger.info(f"Telemetry collector started at {rate_hz} Hz")
 
     async def stop(self) -> None:
         """Stop telemetry collection."""
         self._running = False
-        await self._bridge.stop_telemetry_stream()
+        await self._connector.stop_telemetry_stream()
         logger.info("Telemetry collector stopped")
 
     @property
     def latest(self) -> Optional[TelemetryFrame]:
         """Get the latest telemetry frame (non-blocking)."""
-        return self._bridge.latest_telemetry
+        return self._connector.latest_telemetry
+
+    # ── Private ──────────────────────────────────────────────
+
+    async def _on_telemetry(self, frame: TelemetryFrame) -> None:
+        """Callback from DroneConnector — distributes to all consumers."""
+        # Publish via EventBus (Observer pattern)
+        if self._event_bus:
+            await self._event_bus.publish(TelemetryEvent(frame=frame))
+
+        # Publish via queues (WebSocket compat)
+        for queue in self._subscribers:
+            try:
+                queue.put_nowait(frame)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                    queue.put_nowait(frame)
+                except asyncio.QueueEmpty:
+                    pass

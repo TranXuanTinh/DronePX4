@@ -2,14 +2,15 @@
 """
 run_mission.py — Main entry point for autonomous inspection mission.
 
+Uses AppFactory for subsystem construction (eliminates duplicated wiring).
 Connects to PX4 SITL, initializes all subsystems, and runs the
-mission state machine. This is what you run to execute a mission.
+mission state machine.
 
 Usage:
     # 1. Start PX4 SITL first:  ./scripts/launch_sitl.sh
     # 2. Run mission:           python scripts/run_mission.py
-    # 3. (Optional) Open QGC to visualize
 """
+from __future__ import annotations
 
 import asyncio
 import argparse
@@ -23,15 +24,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.logger import setup_logging
 from src.utils.config_loader import load_config
+from src.core.events import EventBus
 from src.bridge.mavlink_bridge import MAVLinkBridge
 from src.bridge.commands import FlightCommands
-from src.perception.camera import GazeboCamera
+from src.perception.camera import CameraFactory
 from src.perception.detector import YOLODetector
 from src.perception.tracker import ByteTrackWrapper
 from src.perception.geotagging import GPSGeotagger
 from src.mission.state_machine import MissionStateMachine
 from src.mission.safety import SafetyMonitor
-from src.mission.waypoint_planner import WaypointPlanner
+from src.mission.waypoint_planner import PatternRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -50,30 +52,31 @@ async def main(config_path: str = None):
     logger.info("  Drone Inspector — Autonomous Mission (SITL)")
     logger.info("=" * 60)
 
+    event_bus = EventBus()
+
     # === Initialize subsystems ===
 
-    # MAVLink bridge
+    # MAVLink bridge (with context manager)
     bridge = MAVLinkBridge(
-        connection_string=config.get("connection", {}).get("mavsdk_address")
+        connection_string=config.get("connection", {}).get("mavsdk_address"),
     )
     await bridge.connect()
     await bridge.wait_for_ready()
 
     # Start telemetry
     await bridge.start_telemetry_stream(
-        rate_hz=config.get("dashboard", {}).get("telemetry_rate_hz", 10.0)
+        rate_hz=config.get("dashboard", {}).get("telemetry_rate_hz", 10.0),
     )
 
     # Flight commands
     commands = FlightCommands(bridge)
 
-    # Camera
+    # Camera (factory creates correct implementation)
     cam_config = config.get("camera", {})
-    camera = GazeboCamera(
+    camera = CameraFactory.create(
         source=cam_config.get("source", "gazebo"),
         width=cam_config.get("width", 640),
         height=cam_config.get("height", 480),
-        fps=cam_config.get("fps", 15),
     )
     camera.open()
 
@@ -101,12 +104,12 @@ async def main(config_path: str = None):
         image_height=cam_config.get("height", 480),
     )
 
-    # Safety
+    # Safety (Chain of Responsibility)
     safety_config = config.get("safety", {})
     mission_config = config.get("mission", {})
     search_area = mission_config.get("search_area", {})
 
-    safety = SafetyMonitor(
+    safety = SafetyMonitor.from_config(
         geofence_radius_m=safety_config.get("geofence_radius_m", 500),
         max_altitude_m=safety_config.get("max_altitude_m", 120),
         min_battery_pct=safety_config.get("min_battery_percent", 20),
@@ -115,48 +118,40 @@ async def main(config_path: str = None):
         home_lon=search_area.get("center_lon", 8.545594),
     )
 
-    # === Generate waypoints ===
+    # === Generate waypoints (Strategy pattern) ===
     pattern = mission_config.get("search_pattern", "lawnmower")
 
-    if pattern == "lawnmower":
-        waypoints = WaypointPlanner.lawnmower(
-            center_lat=search_area.get("center_lat", 47.397742),
-            center_lon=search_area.get("center_lon", 8.545594),
-            width_m=search_area.get("width_m", 200),
-            height_m=search_area.get("height_m", 150),
-            spacing_m=search_area.get("spacing_m", 30),
-            altitude_m=mission_config.get("search_altitude_m", 20.0),
-        )
-    elif pattern == "expanding_square":
-        waypoints = WaypointPlanner.expanding_square(
-            center_lat=search_area.get("center_lat", 47.397742),
-            center_lon=search_area.get("center_lon", 8.545594),
-            initial_radius_m=20,
-            expansion_m=15,
-            max_radius_m=100,
-            altitude_m=mission_config.get("search_altitude_m", 20.0),
-        )
-    else:
+    pattern_config = {
+        "center_lat": search_area.get("center_lat", 47.397742),
+        "center_lon": search_area.get("center_lon", 8.545594),
+        "width_m": search_area.get("width_m", 200),
+        "height_m": search_area.get("height_m", 150),
+        "spacing_m": search_area.get("spacing_m", 30),
+        "altitude_m": mission_config.get("search_altitude_m", 20.0),
+        "initial_radius_m": 20,
+        "expansion_m": 15,
+        "max_radius_m": 100,
+    }
+
+    try:
+        waypoints = PatternRegistry.generate(pattern, pattern_config)
+    except ValueError:
         logger.warning(f"Unknown pattern '{pattern}', using lawnmower")
-        waypoints = WaypointPlanner.lawnmower(
-            center_lat=search_area.get("center_lat", 47.397742),
-            center_lon=search_area.get("center_lon", 8.545594),
-            width_m=100, height_m=100, spacing_m=20,
-            altitude_m=20.0,
-        )
+        waypoints = PatternRegistry.generate("lawnmower", pattern_config)
 
     logger.info(f"Generated {len(waypoints)} waypoints ({pattern} pattern)")
 
     # === Create and run state machine ===
     state_machine = MissionStateMachine(
-        bridge=bridge,
-        commands=commands,
+        connector=bridge,
+        flight=commands,
         detector=detector,
         tracker=tracker,
         geotagger=geotagger,
         camera=camera,
         safety=safety,
         config=mission_config,
+        event_bus=event_bus,
     )
 
     # Handle Ctrl+C gracefully
@@ -181,7 +176,7 @@ async def main(config_path: str = None):
     # Report
     detections = state_machine.detections
     logger.info("=" * 60)
-    logger.info(f"  Mission Complete!")
+    logger.info("  Mission Complete!")
     logger.info(f"  Duration:   {state_machine.mission_elapsed_s:.1f}s")
     logger.info(f"  Waypoints:  {len(waypoints)}")
     logger.info(f"  Detections: {len(detections)}")
@@ -198,7 +193,7 @@ async def main(config_path: str = None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Run autonomous inspection mission in PX4 SITL"
+        description="Run autonomous inspection mission in PX4 SITL",
     )
     parser.add_argument(
         "--config", "-c",

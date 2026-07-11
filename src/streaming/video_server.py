@@ -14,8 +14,8 @@ from typing import List, Optional, Set
 import cv2
 import numpy as np
 
-from src.perception.camera import GazeboCamera
-from src.perception.tracker import Track
+from src.core.interfaces import CameraSource
+from src.core.types import Track
 from src.streaming.overlay import DetectionOverlay
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ class VideoServer:
 
     def __init__(
         self,
-        camera: GazeboCamera,
+        camera: CameraSource,
         overlay: DetectionOverlay,
         jpeg_quality: int = 70,
         target_fps: float = 15.0,

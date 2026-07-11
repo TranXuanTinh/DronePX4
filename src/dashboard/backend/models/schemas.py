@@ -4,9 +4,8 @@ Pydantic schemas for the dashboard API.
 Defines data models for telemetry, detections, mission status,
 and report generation — shared between backend and WebSocket endpoints.
 """
+from __future__ import annotations
 
-from datetime import datetime
-from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -63,17 +62,8 @@ class DetectionListResponse(BaseModel):
 
 # === Mission ===
 
-class MissionStateEnum(str, Enum):
-    IDLE = "IDLE"
-    PREFLIGHT = "PREFLIGHT"
-    TAKEOFF = "TAKEOFF"
-    SEARCH = "SEARCH"
-    DETECT = "DETECT"
-    INSPECT = "INSPECT"
-    LOG = "LOG"
-    RTL = "RTL"
-    LANDED = "LANDED"
-    ABORT = "ABORT"
+# Use canonical MissionState from core.types
+# from src.core.types import MissionState as MissionStateEnum
 
 
 class MissionStatus(BaseModel):
