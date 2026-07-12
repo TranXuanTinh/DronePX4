@@ -65,7 +65,7 @@ def mock_deps():
 def create_sm(mock_deps):
     bridge, commands, detector, tracker, geotagger, camera, safety, config = mock_deps
     return MissionStateMachine(
-        bridge=bridge, commands=commands,
+        connector=bridge, flight=commands,
         detector=detector, tracker=tracker,
         geotagger=geotagger, camera=camera,
         safety=safety, config=config,

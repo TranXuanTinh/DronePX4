@@ -56,6 +56,7 @@ select = ["E", "F", "I", "W"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-p no:launch_testing -p no:launch_ros -p no:ament_flake8 -p no:ament_pep257 -p no:ament_copyright -p no:ament_xmllint -p no:ament_lint -p no:colcon_core_warnings_stderr"
 
 [tool.mypy]
 python_version = "3.10"
