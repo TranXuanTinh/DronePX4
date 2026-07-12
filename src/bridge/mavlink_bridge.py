@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
+import subprocess
 import time
 from typing import Optional, Callable, Awaitable
 
@@ -32,26 +35,74 @@ class MAVLinkBridge(DroneConnector):
     """
 
     SITL_ADDRESS = "udp://:14540"
+    MAVSDK_PORT = 50051
+    MAX_CONNECT_RETRIES = 3
+    CONNECT_RETRY_DELAY = 2.0
 
     def __init__(self, connection_string: Optional[str] = None) -> None:
         self._address = connection_string or self.SITL_ADDRESS
-        self._drone = System()
+        self._drone: Optional[System] = None
         self._connected = False
         self._latest_telemetry: Optional[TelemetryFrame] = None
         self._telemetry_task: Optional[asyncio.Task] = None
+        self._reconnecting = False
 
     # ── DroneConnector interface ─────────────────────────────
 
     async def connect(self) -> None:
-        """Connect to PX4 SITL via UDP."""
-        logger.info(f"Connecting to PX4 SITL at {self._address}...")
-        await self._drone.connect(system_address=self._address)
+        """Connect to PX4 SITL via UDP with retry logic."""
+        last_error = None
 
+        for attempt in range(1, self.MAX_CONNECT_RETRIES + 1):
+            try:
+                logger.info(
+                    f"Connecting to PX4 SITL at {self._address} "
+                    f"(attempt {attempt}/{self.MAX_CONNECT_RETRIES})..."
+                )
+
+                # Clean up any orphaned mavsdk_server processes
+                self._kill_orphaned_mavsdk_server()
+
+                # Create a fresh System instance for each attempt
+                self._drone = System()
+                await self._drone.connect(system_address=self._address)
+
+                # Wait for actual connection with a timeout
+                connected = await asyncio.wait_for(
+                    self._wait_for_connection(), timeout=15.0,
+                )
+                if connected:
+                    self._connected = True
+                    logger.info("Connected to PX4 SITL")
+                    return
+
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(
+                    f"Connection attempt {attempt} timed out"
+                )
+                logger.warning(f"Connection attempt {attempt} timed out")
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Connection attempt {attempt} failed: {e}"
+                )
+
+            if attempt < self.MAX_CONNECT_RETRIES:
+                delay = self.CONNECT_RETRY_DELAY * attempt
+                logger.info(f"Retrying in {delay:.0f}s...")
+                await asyncio.sleep(delay)
+
+        raise ConnectionError(
+            f"Failed to connect after {self.MAX_CONNECT_RETRIES} attempts. "
+            f"Last error: {last_error}"
+        )
+
+    async def _wait_for_connection(self) -> bool:
+        """Wait for the drone connection state to become connected."""
         async for state in self._drone.core.connection_state():
             if state.is_connected:
-                self._connected = True
-                logger.info("Connected to PX4 SITL")
-                break
+                return True
+        return False
 
     async def disconnect(self) -> None:
         """Cleanup and disconnect."""
@@ -105,6 +156,55 @@ class MAVLinkBridge(DroneConnector):
                 pass
             self._telemetry_task = None
 
+    # ── Connection Health ────────────────────────────────────
+
+    async def is_healthy(self) -> bool:
+        """Check if the gRPC channel to mavsdk_server is alive."""
+        if not self._drone or not self._connected:
+            return False
+        try:
+            # Quick gRPC round-trip to test the channel
+            async for state in self._drone.core.connection_state():
+                return state.is_connected
+        except Exception:
+            return False
+        return False
+
+    async def reconnect(self) -> bool:
+        """Attempt to reconnect to the drone.
+
+        Returns True if reconnection succeeded, False otherwise.
+        Thread-safe: prevents concurrent reconnection attempts.
+        """
+        if self._reconnecting:
+            logger.debug("Reconnection already in progress, skipping")
+            return False
+
+        self._reconnecting = True
+        try:
+            logger.warning("Attempting reconnection to PX4 SITL...")
+            self._connected = False
+
+            # Stop old telemetry
+            if self._telemetry_task:
+                self._telemetry_task.cancel()
+                try:
+                    await self._telemetry_task
+                except asyncio.CancelledError:
+                    pass
+                self._telemetry_task = None
+
+            # Reconnect
+            await self.connect()
+            await self.wait_for_ready(timeout=30.0)
+            logger.info("Reconnection successful")
+            return True
+        except Exception as e:
+            logger.error(f"Reconnection failed: {e}")
+            return False
+        finally:
+            self._reconnecting = False
+
     # ── Context manager ──────────────────────────────────────
 
     async def __aenter__(self) -> MAVLinkBridge:
@@ -123,8 +223,49 @@ class MAVLinkBridge(DroneConnector):
 
     # ── Private ──────────────────────────────────────────────
 
+    @staticmethod
+    def _kill_orphaned_mavsdk_server() -> None:
+        """Kill any orphaned mavsdk_server processes on port 50051.
+
+        This prevents port conflicts when the backend restarts
+        (e.g., uvicorn --reload).
+        """
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{MAVLinkBridge.MAVSDK_PORT}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.stdout.strip():
+                pids = result.stdout.strip().split("\n")
+                for pid_str in pids:
+                    try:
+                        pid = int(pid_str.strip())
+                        # Don't kill our own process
+                        if pid != os.getpid():
+                            os.kill(pid, signal.SIGTERM)
+                            logger.info(
+                                f"Killed orphaned mavsdk_server "
+                                f"(PID {pid}) on port {MAVLinkBridge.MAVSDK_PORT}"
+                            )
+                    except (ValueError, ProcessLookupError, PermissionError):
+                        pass
+                # Give processes time to die
+                import time as _time
+                _time.sleep(0.5)
+        except FileNotFoundError:
+            # lsof not available — try fuser instead
+            try:
+                subprocess.run(
+                    ["fuser", "-k", f"{MAVLinkBridge.MAVSDK_PORT}/tcp"],
+                    capture_output=True, timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+        except subprocess.TimeoutExpired:
+            pass
+
     async def _telemetry_loop(self, callback=None) -> None:
-        """Internal telemetry collection loop."""
+        """Internal telemetry collection loop with error recovery."""
         # Cache latest values from each stream
         position = Position(0, 0, 0, 0)
         attitude = Attitude(0, 0, 0)
@@ -182,12 +323,31 @@ class MAVLinkBridge(DroneConnector):
                 gps_sats = info.num_satellites
                 gps_fix = info.fix_type.value
 
+        async def _run_with_recovery(coro_factory, name: str):
+            """Run a telemetry stream coroutine with automatic recovery."""
+            while True:
+                try:
+                    await coro_factory()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(
+                        f"Telemetry stream '{name}' error: {e}. "
+                        "Will retry in 2s..."
+                    )
+                    await asyncio.sleep(2.0)
+
         tasks = [
-            asyncio.create_task(coro())
-            for coro in (
-                _update_position, _update_attitude, _update_heading,
-                _update_speed, _update_battery, _update_flight_mode,
-                _update_armed, _update_gps,
+            asyncio.create_task(_run_with_recovery(coro, name))
+            for coro, name in (
+                (_update_position, "position"),
+                (_update_attitude, "attitude"),
+                (_update_heading, "heading"),
+                (_update_speed, "speed"),
+                (_update_battery, "battery"),
+                (_update_flight_mode, "flight_mode"),
+                (_update_armed, "armed"),
+                (_update_gps, "gps"),
             )
         ]
 

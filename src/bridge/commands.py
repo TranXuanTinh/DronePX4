@@ -7,6 +7,7 @@ Depends on DroneConnector (ABC), not the concrete MAVLinkBridge.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from typing import Optional
@@ -24,6 +25,14 @@ from src.bridge.mavlink_bridge import MAVLinkBridge
 
 logger = logging.getLogger(__name__)
 
+# gRPC error types to catch for retry
+try:
+    from grpc.aio._call import AioRpcError
+    from grpc import StatusCode
+    _GRPC_AVAILABLE = True
+except ImportError:
+    _GRPC_AVAILABLE = False
+
 
 class FlightCommands(FlightController):
     """MAVSDK-based flight command wrappers.
@@ -38,55 +47,117 @@ class FlightCommands(FlightController):
         await cmd.takeoff(15.0)
     """
 
+    MAX_RETRIES = 2
+    RETRY_DELAY = 1.0
+
     def __init__(self, bridge: MAVLinkBridge) -> None:
         self._bridge = bridge
         self._drone = bridge.drone
         self._offboard_active = False
 
+    def _refresh_drone_ref(self) -> None:
+        """Refresh the MAVSDK System reference after reconnection."""
+        self._drone = self._bridge.drone
+
+    async def _with_retry(self, operation, operation_name: str):
+        """Execute a drone operation with gRPC error recovery.
+
+        If the gRPC channel is unavailable, attempts reconnection
+        before retrying the operation.
+        """
+        last_error = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                return await operation()
+            except ActionError:
+                raise  # Action errors are real drone errors, don't retry
+            except Exception as e:
+                is_grpc_unavailable = False
+                if _GRPC_AVAILABLE and isinstance(e, AioRpcError):
+                    is_grpc_unavailable = (
+                        e.code() == StatusCode.UNAVAILABLE
+                    )
+                # Also catch generic connection errors
+                if not is_grpc_unavailable and "UNAVAILABLE" not in str(e):
+                    raise
+
+                last_error = e
+                logger.warning(
+                    f"{operation_name} failed (attempt {attempt}/"
+                    f"{self.MAX_RETRIES}): gRPC UNAVAILABLE — "
+                    f"attempting reconnection..."
+                )
+
+                if attempt < self.MAX_RETRIES:
+                    reconnected = await self._bridge.reconnect()
+                    if reconnected:
+                        self._refresh_drone_ref()
+                        await asyncio.sleep(self.RETRY_DELAY)
+                    else:
+                        raise ConnectionError(
+                            f"{operation_name} failed: could not "
+                            f"reconnect to MAVSDK server"
+                        ) from e
+
+        raise ConnectionError(
+            f"{operation_name} failed after {self.MAX_RETRIES} "
+            f"retries: {last_error}"
+        )
+
     # ── FlightController interface ───────────────────────────
 
     async def arm(self) -> None:
         logger.info("Arming vehicle...")
-        try:
+        async def _do():
             await self._drone.action.arm()
             logger.info("Vehicle armed")
+        try:
+            await self._with_retry(_do, "Arm")
         except ActionError as e:
             logger.error(f"Arm failed: {e}")
             raise
 
     async def disarm(self) -> None:
         logger.info("Disarming vehicle...")
-        try:
+        async def _do():
             await self._drone.action.disarm()
             logger.info("Vehicle disarmed")
+        try:
+            await self._with_retry(_do, "Disarm")
         except ActionError as e:
             logger.error(f"Disarm failed: {e}")
             raise
 
     async def takeoff(self, altitude_m: float = 15.0) -> None:
         logger.info(f"Taking off to {altitude_m}m...")
-        await self._drone.action.set_takeoff_altitude(altitude_m)
-        try:
+        async def _do():
+            await self._drone.action.set_takeoff_altitude(altitude_m)
             await self._drone.action.takeoff()
             logger.info(f"Takeoff command sent (target: {altitude_m}m)")
+        try:
+            await self._with_retry(_do, "Takeoff")
         except ActionError as e:
             logger.error(f"Takeoff failed: {e}")
             raise
 
     async def land(self) -> None:
         logger.info("Landing...")
-        try:
+        async def _do():
             await self._drone.action.land()
             logger.info("Land command sent")
+        try:
+            await self._with_retry(_do, "Land")
         except ActionError as e:
             logger.error(f"Land failed: {e}")
             raise
 
     async def rtl(self) -> None:
         logger.info("Returning to launch...")
-        try:
+        async def _do():
             await self._drone.action.return_to_launch()
             logger.info("RTL command sent")
+        try:
+            await self._with_retry(_do, "RTL")
         except ActionError as e:
             logger.error(f"RTL failed: {e}")
             raise
@@ -95,9 +166,11 @@ class FlightCommands(FlightController):
         logger.info("Holding position...")
         if self._offboard_active:
             await self.stop_offboard()
-        try:
+        async def _do():
             await self._drone.action.hold()
             logger.info("Hold command sent")
+        try:
+            await self._with_retry(_do, "Hold")
         except ActionError as e:
             logger.error(f"Hold failed: {e}")
             raise
@@ -113,10 +186,12 @@ class FlightCommands(FlightController):
             f"Going to ({latitude_deg:.6f}, {longitude_deg:.6f}) "
             f"at {altitude_m:.1f}m"
         )
-        try:
+        async def _do():
             await self._drone.action.goto_location(
                 latitude_deg, longitude_deg, altitude_m, yaw_deg,
             )
+        try:
+            await self._with_retry(_do, "Goto")
         except ActionError as e:
             logger.error(f"Goto failed: {e}")
             raise
@@ -141,6 +216,8 @@ class FlightCommands(FlightController):
                     break
         except asyncio.TimeoutError:
             pass
+        except Exception as e:
+            logger.warning(f"Altitude wait error: {e}")
         logger.warning(f"Altitude wait timed out after {timeout_s}s")
         return False
 
@@ -156,6 +233,8 @@ class FlightCommands(FlightController):
                     break
         except asyncio.TimeoutError:
             pass
+        except Exception as e:
+            logger.warning(f"Landing wait error: {e}")
         logger.warning(f"Landing wait timed out after {timeout_s}s")
         return False
 

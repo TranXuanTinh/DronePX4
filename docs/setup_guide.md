@@ -160,6 +160,7 @@ cd src/dashboard/frontend
 npm run dev
 
 # Open http://localhost:3000
+# Use the ▶ Start Mission button to begin an autonomous inspection
 ```
 
 ---
@@ -191,7 +192,12 @@ cd /path/to/DronePX4
 
 ### MAVSDK connection timeout
 
-Ensure PX4 SITL is running before starting the mission script. The SITL process needs 10-15 seconds to initialize GPS simulation.
+Ensure PX4 SITL is running before starting the backend. The SITL process needs 10–15 seconds to initialize GPS simulation.
+
+If you restart the backend (`uvicorn --reload`) while SITL is running, an orphaned `mavsdk_server` process may hold port 50051. The backend auto-kills it, but if the issue persists:
+```bash
+fuser -k 50051/tcp
+```
 
 ### Port 14540 already in use
 

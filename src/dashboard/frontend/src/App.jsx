@@ -15,6 +15,15 @@ export default function App() {
   const [missionState, setMissionState] = useState('IDLE');
   const [connected, setConnected] = useState(false);
   const [flightPath, setFlightPath] = useState([]);
+  const [statusMessage, setStatusMessage] = useState(null);
+
+  // --- Status message auto-clear ---
+  useEffect(() => {
+    if (statusMessage) {
+      const timer = setTimeout(() => setStatusMessage(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [statusMessage]);
 
   // --- Telemetry WebSocket ---
   useEffect(() => {
@@ -84,41 +93,90 @@ export default function App() {
     try {
       setDetections([]);
       setFlightPath([]);
+      setStatusMessage({ type: 'info', text: 'Starting mission...' });
       const res = await fetch(`${API_BASE}/api/mission/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pattern: 'lawnmower' }),
       });
       const data = await res.json();
-      if (!data.success) alert(data.message);
+      if (data.success) {
+        setStatusMessage({ type: 'success', text: data.message });
+      } else {
+        setStatusMessage({ type: 'error', text: data.message || 'Start failed' });
+      }
     } catch (e) {
-      alert(`Start failed: ${e.message}`);
+      setStatusMessage({ type: 'error', text: `Start failed: ${e.message}` });
     }
   }, []);
 
   const abortMission = useCallback(async () => {
     if (!confirm('Abort mission and return to launch?')) return;
     try {
-      await fetch(`${API_BASE}/api/mission/abort`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/mission/abort`, { method: 'POST' });
+      const data = await res.json();
+      setStatusMessage({ type: 'warning', text: data.message || 'Abort commanded' });
     } catch (e) {
-      alert(`Abort failed: ${e.message}`);
+      setStatusMessage({ type: 'error', text: `Abort failed: ${e.message}` });
     }
   }, []);
 
   const commandRTL = useCallback(async () => {
     try {
-      await fetch(`${API_BASE}/api/mission/rtl`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/mission/rtl`, { method: 'POST' });
+      const data = await res.json();
+      setStatusMessage({ type: 'info', text: data.message || 'RTL commanded' });
     } catch (e) {
-      alert(`RTL failed: ${e.message}`);
+      setStatusMessage({ type: 'error', text: `RTL failed: ${e.message}` });
     }
   }, []);
 
-  const downloadCSV = useCallback(() => {
-    window.open(`${API_BASE}/api/report/csv`, '_blank');
+  const downloadCSV = useCallback(async () => {
+    try {
+      setStatusMessage({ type: 'info', text: 'Generating CSV report...' });
+      const res = await fetch(`${API_BASE}/api/report/csv`);
+      if (!res.ok) {
+        const errText = await res.text();
+        setStatusMessage({ type: 'error', text: `CSV export failed: ${errText}` });
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'detection_report.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setStatusMessage({ type: 'success', text: 'CSV report downloaded' });
+    } catch (e) {
+      setStatusMessage({ type: 'error', text: `CSV export failed: ${e.message}` });
+    }
   }, []);
 
-  const downloadPDF = useCallback(() => {
-    window.open(`${API_BASE}/api/report/pdf`, '_blank');
+  const downloadPDF = useCallback(async () => {
+    try {
+      setStatusMessage({ type: 'info', text: 'Generating PDF report...' });
+      const res = await fetch(`${API_BASE}/api/report/pdf`);
+      if (!res.ok) {
+        const errText = await res.text();
+        setStatusMessage({ type: 'error', text: `PDF export failed: ${errText}` });
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'mission_report.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setStatusMessage({ type: 'success', text: 'PDF report downloaded' });
+    } catch (e) {
+      setStatusMessage({ type: 'error', text: `PDF export failed: ${e.message}` });
+    }
   }, []);
 
   return (
@@ -128,6 +186,19 @@ export default function App() {
         telemetry={telemetry}
         missionState={missionState}
       />
+
+      {/* Status Toast */}
+      {statusMessage && (
+        <div className={`status-toast status-toast-${statusMessage.type}`}>
+          <span>{statusMessage.text}</span>
+          <button
+            className="status-toast-close"
+            onClick={() => setStatusMessage(null)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <VideoFeed wsUrl={`${WS_BASE}/ws/video`} />
 

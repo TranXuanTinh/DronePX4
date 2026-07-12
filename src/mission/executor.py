@@ -71,6 +71,26 @@ class MissionExecutor:
                 logger.error("Not connected to PX4 SITL")
                 return "checks_fail"
 
+            # Active gRPC health check — verify the channel is alive
+            if hasattr(self.connector, 'is_healthy'):
+                healthy = await self.connector.is_healthy()
+                if not healthy:
+                    logger.error(
+                        "MAVSDK gRPC channel is not healthy. "
+                        "Attempting reconnection..."
+                    )
+                    if hasattr(self.connector, 'reconnect'):
+                        reconnected = await self.connector.reconnect()
+                        if not reconnected:
+                            logger.error("Reconnection failed")
+                            return "checks_fail"
+                        # Refresh flight command references
+                        if hasattr(self.flight, '_refresh_drone_ref'):
+                            self.flight._refresh_drone_ref()
+                        logger.info("Reconnected successfully")
+                    else:
+                        return "checks_fail"
+
             telem = self.connector.latest_telemetry
             if telem and telem.gps_fix_type < 3:
                 logger.error("No GPS fix")
@@ -88,9 +108,22 @@ class MissionExecutor:
         alt = self.config.get("takeoff_altitude_m", 15.0)
         logger.info(f"Taking off to {alt}m...")
 
-        await self.flight.arm()
-        await asyncio.sleep(1.0)
-        await self.flight.takeoff(alt)
+        try:
+            await self.flight.arm()
+            await asyncio.sleep(1.0)
+            await self.flight.takeoff(alt)
+        except ConnectionError as e:
+            logger.error(
+                f"Takeoff failed — MAVSDK connection error: {e}. "
+                "Aborting mission."
+            )
+            return "abort"
+        except Exception as e:
+            logger.error(
+                f"Takeoff failed — unexpected error: {e}. "
+                "Aborting mission."
+            )
+            return "abort"
 
         reached = await self.flight.wait_for_altitude(
             alt, tolerance_m=2.0, timeout_s=30.0,

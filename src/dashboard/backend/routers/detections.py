@@ -73,6 +73,11 @@ async def ws_detections(websocket: WebSocket):
     try:
         while True:
             current_count = len(container.detections)
+
+            # Handle list reset between missions (last_count > current_count)
+            if current_count < last_count:
+                last_count = 0
+
             if current_count > last_count:
                 for i in range(last_count, current_count):
                     d = container.detections[i]

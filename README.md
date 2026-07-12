@@ -80,6 +80,7 @@ cd src/dashboard/backend && uvicorn main:app --reload --port 8000
 
 # Terminal 4: Start frontend
 cd src/dashboard/frontend && npm run dev
+# Open http://localhost:3000 — use the ▶ Start Mission button
 ```
 
 ---
@@ -122,6 +123,8 @@ Safety monitoring runs continuously: battery, geofence, altitude, connection →
 | Dashboard Frontend | React + Vite + Leaflet |
 | Reports | ReportLab (PDF) + CSV |
 | Language | Python 3.10+ |
+
+> **Connection robustness**: The backend auto-kills orphaned `mavsdk_server` processes on port 50051 before each connect attempt, retries with exponential backoff (3 attempts), and recovers telemetry streams after transient gRPC failures.
 
 ---
 
@@ -198,9 +201,18 @@ DronePX4/
 
 | Endpoint | Description | Data |
 |----------|-------------|------|
-| `/ws/telemetry` | Real-time telemetry @ 10 Hz | `TelemetryData` JSON |
-| `/ws/detections` | Detection events as they occur | `DetectionEvent` JSON |
-| `/ws/video` | MJPEG video with overlays | Binary JPEG frames |
+| `/ws/telemetry` | Real-time telemetry @ 10 Hz | JSON — altitude, speed, battery, GPS, heading, flight mode |
+| `/ws/detections` | Detection events as they occur (resets between missions) | `DetectionEvent` JSON |
+| `/ws/video` | MJPEG video with detection overlays | Binary JPEG frames @ 15 FPS |
+
+### Reports
+
+Both reports are accessible via the dashboard buttons or directly via HTTP:
+
+| Endpoint | Notes |
+|----------|-------|
+| `GET /api/report/csv` | Always returns a valid CSV; includes an informational row when empty |
+| `GET /api/report/pdf` | Includes Vehicle Telemetry section (position, battery, GPS, flight mode) |
 
 ---
 
