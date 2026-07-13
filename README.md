@@ -10,27 +10,64 @@ operator dashboard. Everything runs in simulation.
 
 ## 🏗️ Architecture
 
+### System Overview
+
 ```
-PX4 SITL  ←→  MAVSDK-Python  ←→  Mission State Machine
-                                        ↓
-Gazebo Camera → YOLOv8 → ByteTrack → GPS Geotagging
-                                        ↓
-                               Operator Dashboard
-                         (React + FastAPI + WebSocket)
+┌─────────────────────────────────────────────────────────────────┐
+│                        SIMULATION LAYER                         │
+│   PX4 SITL  ◄──MAVLink──►  Gazebo Harmonic  (UDP :14540)       │
+└────────────────────┬────────────────────────────────────────────┘
+                     │ MAVSDK-Python (gRPC)
+┌────────────────────▼────────────────────────────────────────────┐
+│                         BRIDGE LAYER                            │
+│   MAVLinkBridge (DroneConnector)  ·  FlightCommands             │
+│   TelemetryCollector  ·  Connection health + auto-reconnect      │
+└────────┬──────────────────────────────────────┬─────────────────┘
+         │ Commands / Telemetry                  │ Telemetry frames
+┌────────▼───────────────────────┐   ┌──────────▼─────────────────┐
+│         AUTONOMY LAYER         │   │       STREAMING LAYER       │
+│  MissionStateMachine           │   │  Gazebo Camera              │
+│    → PREFLIGHT → TAKEOFF       │   │    ↓ GStreamer / TestPattern │
+│    → SEARCH → DETECT           │   │  YOLOv8 Detection           │
+│    → INSPECT → LOG → RTL       │   │    ↓ ByteTrack Tracking     │
+│  SafetyMonitor (battery,       │   │  GPS Geotagging             │
+│    geofence, altitude)         │   │    ↓ JPEG Overlay           │
+│  WaypointPlanner (strategies)  │   │  VideoServer → WebSocket    │
+└────────┬───────────────────────┘   └──────────┬──────────────────┘
+         │ Detections / State                    │ MJPEG frames
+┌────────▼───────────────────────────────────────▼─────────────────┐
+│                       DASHBOARD LAYER                            │
+│  FastAPI Backend (port 8000)                                     │
+│    REST: mission · telemetry · detections · reports              │
+│    WebSocket: /ws/telemetry  /ws/detections  /ws/video           │
+│  React + Vite Frontend (port 3000)                               │
+│    Live Map · Camera Feed · Detection Log · Telemetry · Reports  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-The codebase is designed around **SOLID principles** and **GoF design patterns**:
+### Design Patterns
 
-| Pattern | Application |
-|---------|-------------|
-| **Strategy** | Pluggable search patterns (`LawnmowerPattern`, `ExpandingSquarePattern`, ...) |
-| **Observer** | `EventBus` for decoupled telemetry/detection/state events |
-| **Chain of Responsibility** | Composable safety rules (`BatteryRule`, `GeofenceRule`, ...) |
-| **Factory** | `CameraFactory`, `AppFactory` for config-driven construction |
-| **State Machine** | `MissionStateMachine` with declarative transitions |
-| **Dependency Inversion** | All consumers depend on ABCs (`DroneConnector`, `FlightController`, `CameraSource`, ...) |
+| Pattern | Where Applied |
+|---------|---------------|
+| **Strategy** | Pluggable search patterns — `LawnmowerPattern`, `ExpandingSquarePattern` |
+| **Observer** | `EventBus` decouples telemetry, detection, and state-change events |
+| **Chain of Responsibility** | Composable safety rules — `BatteryRule`, `GeofenceRule`, `AltitudeRule` |
+| **Factory** | `CameraFactory`, `AppFactory` — config-driven, no hard-coded wiring |
+| **State Machine** | `MissionStateMachine` with declarative transitions via `transitions` lib |
+| **Dependency Inversion** | All consumers depend on ABCs (`DroneConnector`, `FlightController`, ...) |
 
-> 📄 Full architecture docs: [docs/architecture.md](docs/architecture.md)
+### Layer Responsibilities
+
+| Layer | Modules | Responsibility |
+|-------|---------|----------------|
+| **Core** | `core/types.py`, `core/interfaces.py`, `core/events.py` | Shared DTOs, ABCs, EventBus — no dependencies |
+| **Bridge** | `bridge/mavlink_bridge.py`, `bridge/commands.py` | PX4 communication, gRPC health, auto-reconnect |
+| **Perception** | `perception/camera.py`, `detector.py`, `tracker.py`, `geotagging.py` | Vision pipeline from frame to geo-tagged detection |
+| **Autonomy** | `mission/state_machine.py`, `executor.py`, `safety.py` | Mission orchestration and safety monitoring |
+| **Streaming** | `streaming/video_server.py`, `overlay.py` | MJPEG WebSocket broadcast with overlay rendering |
+| **Dashboard** | `dashboard/backend/`, `dashboard/frontend/` | Operator UI — REST + WebSocket + React |
+
+> 📄 Full architecture docs with UML diagrams: [docs/architecture.md](docs/architecture.md)
 
 ---
 
@@ -38,22 +75,36 @@ The codebase is designed around **SOLID principles** and **GoF design patterns**
 
 ### Prerequisites
 
-- Ubuntu 22.04+ with ROS 2 Jazzy
-- PX4 Autopilot v1.15+ (SITL)
-- Gazebo Harmonic
-- Python 3.10+
-- Node.js 18+ (for dashboard frontend)
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| Ubuntu | 22.04 LTS | Required for PX4 SITL + Gazebo |
+| Miniconda / Conda | any | Environment management |
+| Python | ≥ 3.10 | Installed via conda |
+| Node.js | ≥ 18 | For dashboard frontend |
+| PX4 Autopilot | v1.15+ | Installed by `setup_env.sh` |
+| Gazebo Harmonic | 8.x | Installed by PX4 setup |
 
 ### 1. Setup Environment
 
 ```bash
-# Install PX4 SITL, Gazebo, Python deps, Node.js
+# 1. Create and activate the conda environment
+conda create -n dronepx4 python=3.10 -y
+conda activate dronepx4
+
+# 2. Install PX4 SITL, Gazebo, and Node.js via the setup script
 chmod +x scripts/setup_env.sh
 ./scripts/setup_env.sh
 
-# Activate virtual environment
-source .venv/bin/activate
+# 3. Install Python dependencies
+pip install -r requirements.txt
+
+# 4. Install frontend dependencies
+cd src/dashboard/frontend && npm install && cd -
 ```
+
+> **Note:** The setup script installs PX4-Autopilot and Gazebo Harmonic system-wide.
+> The conda environment handles all Python dependencies. Re-run `conda activate dronepx4`
+> in every new terminal before starting any Python process.
 
 ### 2. Launch PX4 SITL
 
@@ -65,7 +116,10 @@ source .venv/bin/activate
 ### 3. Run Mission
 
 ```bash
-# Terminal 2: Execute autonomous mission
+# Make sure conda env is active first
+conda activate dronepx4
+
+# Terminal 2: Execute autonomous mission (CLI mode)
 python scripts/run_mission.py
 
 # With custom config:
@@ -75,6 +129,8 @@ python scripts/run_mission.py --config config/vehicle/sim_config.yaml
 ### 4. Launch Dashboard (optional)
 
 ```bash
+conda activate dronepx4
+
 # Terminal 3: Start backend
 cd src/dashboard/backend && uvicorn main:app --reload --port 8000
 
@@ -133,50 +189,56 @@ Safety monitoring runs continuously: battery, geofence, altitude, connection →
 ```
 DronePX4/
 ├── src/
-│   ├── core/                        # ← Foundation layer (NEW)
-│   │   ├── types.py                 #   DTOs: Position, TelemetryFrame, Detection, etc.
-│   │   ├── interfaces.py            #   ABCs: DroneConnector, FlightController, etc.
-│   │   ├── geo.py                   #   GPS math: haversine, offset_gps
-│   │   └── events.py                #   EventBus (Observer pattern)
-│   ├── bridge/                      # PX4 communication
-│   │   ├── mavlink_bridge.py        #   DroneConnector impl (MAVSDK)
-│   │   ├── commands.py              #   FlightController impl
-│   │   └── telemetry.py             #   TelemetryCollector
-│   ├── perception/                  # Computer vision
-│   │   ├── camera.py                #   CameraSource impls + CameraFactory
-│   │   ├── detector.py              #   ObjectDetector impl (YOLOv8)
-│   │   ├── tracker.py               #   ObjectTracker impl (ByteTrack)
-│   │   └── geotagging.py            #   Geotagger impl
-│   ├── mission/                     # Autonomy
-│   │   ├── state_machine.py         #   MissionStateMachine (transitions lib)
-│   │   ├── executor.py              #   MissionExecutor (state handlers)
-│   │   ├── safety.py                #   SafetyMonitor + Rules (Chain of Resp.)
-│   │   └── waypoint_planner.py      #   PatternRegistry + Strategies
-│   ├── streaming/                   # Video output
-│   │   ├── video_server.py          #   WebSocket MJPEG server
-│   │   └── overlay.py               #   Detection overlay renderer
-│   ├── dashboard/                   # Operator UI
-│   │   ├── backend/
-│   │   │   ├── main.py              #   FastAPI app (slim entry point)
-│   │   │   ├── dependencies.py      #   AppContainer (typed DI)
-│   │   │   ├── routers/             #   mission, telemetry, detections, video, reports
-│   │   │   ├── models/schemas.py    #   Pydantic schemas
-│   │   │   └── api/reports.py       #   PDF report generator
-│   │   └── frontend/                #   React + Vite
-│   ├── factory.py                   # AppFactory (central wiring)
-│   └── utils/                       # Config loader, logging
-├── tests/
-│   └── unit/                        # 66 unit tests
-│       ├── test_core.py             #   EventBus, geo utilities
-│       ├── test_waypoint_planner.py #   Strategy pattern + PatternRegistry
-│       ├── test_tracker.py          #   ByteTrack ObjectTracker
-│       ├── test_safety.py           #   Chain of Responsibility rules
-│       └── test_geotagging.py       #   GPS projection
-├── config/                          # YAML config, Gazebo worlds, PX4 params
-├── docs/
-│   └── architecture.md              # Full architecture + UML diagrams
-├── scripts/                         # Launch, setup, test scripts
-└── docker/                          # Docker compose
+│   ├── core/                   # Foundation — no dependencies on other layers
+│   │   ├── types.py            #   DTOs: Position, TelemetryFrame, GeotaggedDetection …
+│   │   ├── interfaces.py       #   ABCs: DroneConnector, FlightController, CameraSource …
+│   │   ├── geo.py              #   GPS math: haversine, offset_gps
+│   │   └── events.py           #   EventBus (Observer pattern)
+│   │
+│   ├── bridge/                 # PX4 communication
+│   │   ├── mavlink_bridge.py   #   DroneConnector impl — MAVSDK, auto-reconnect
+│   │   ├── commands.py         #   FlightController impl — arm/takeoff/goto/RTL
+│   │   └── telemetry.py        #   TelemetryCollector
+│   │
+│   ├── perception/             # Computer vision pipeline
+│   │   ├── camera.py           #   CameraSource: GStreamer, VideoFile, TestPattern
+│   │   ├── detector.py         #   ObjectDetector impl (YOLOv8)
+│   │   ├── tracker.py          #   ObjectTracker impl (ByteTrack)
+│   │   └── geotagging.py       #   GPS geotagging of detections
+│   │
+│   ├── mission/                # Autonomy
+│   │   ├── state_machine.py    #   MissionStateMachine (transitions lib)
+│   │   ├── executor.py         #   MissionExecutor — state handler methods
+│   │   ├── safety.py           #   SafetyMonitor + Rules (Chain of Responsibility)
+│   │   └── waypoint_planner.py #   PatternRegistry + Strategy implementations
+│   │
+│   ├── streaming/              # Video output
+│   │   ├── video_server.py     #   WebSocket MJPEG broadcaster
+│   │   └── overlay.py          #   Detection bounding-box overlay renderer
+│   │
+│   ├── dashboard/
+│   │   ├── backend/            # FastAPI application
+│   │   │   ├── main.py         #   App entry point + lifespan
+│   │   │   ├── dependencies.py #   AppContainer (typed DI singleton)
+│   │   │   ├── routers/        #   mission · telemetry · detections · video · reports
+│   │   │   ├── models/         #   Pydantic request/response schemas
+│   │   │   └── api/reports.py  #   PDF report generator (ReportLab)
+│   │   └── frontend/           #   React + Vite + Leaflet
+│   │
+│   ├── factory.py              # AppFactory — wires all subsystems from config
+│   └── utils/                  # Config loader (YAML), structured logging
+│
+├── tests/unit/                 # 66 unit tests
+│   ├── test_core.py            #   EventBus, geo utilities
+│   ├── test_waypoint_planner.py#   Strategy pattern + PatternRegistry
+│   ├── test_tracker.py         #   ByteTrack ObjectTracker
+│   ├── test_safety.py          #   Chain of Responsibility rules
+│   └── test_geotagging.py      #   GPS projection
+│
+├── config/                     # sim_config.yaml, PX4 params, Gazebo worlds
+├── docs/                       # architecture.md, runbook.md, setup_guide.md
+├── scripts/                    # launch_sitl.sh · setup_env.sh · run_mission.py
+└── docker/                     # Docker Compose (px4-sitl, backend, frontend)
 ```
 
 ---
@@ -281,6 +343,8 @@ Edit `config/vehicle/sim_config.yaml` to customize:
 ## 🧪 Testing
 
 ```bash
+conda activate dronepx4
+
 # Run all unit tests (66 tests)
 python -m pytest tests/unit/ -v
 
