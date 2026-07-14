@@ -74,6 +74,10 @@ if [ -n "$WORLD" ]; then
     echo "Using custom world: $WORLD"
 fi
 
+echo "Cleaning up orphaned PX4/Gazebo processes..."
+killall -q -9 gz ruby px4 mavsdk_server 2>/dev/null || true
+sleep 1
+
 echo "=============================================="
 echo " Launching PX4 SITL"
 echo "  Model:  $MODEL"

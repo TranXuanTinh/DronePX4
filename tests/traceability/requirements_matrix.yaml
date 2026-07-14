@@ -1,0 +1,175 @@
+# ============================================================
+# DO-178C Traceability Matrix — Requirements ↔ Test Cases
+# ============================================================
+# Format: Each requirement maps to source code location,
+# test function(s), and compliance standard.
+# ============================================================
+
+requirements:
+
+  # ── Bridge Layer ─────────────────────────────────────────────
+  REQ-BRIDGE-001:
+    description: "MAVLink bridge connects to PX4 SITL successfully"
+    source: "src/bridge/mavlink_bridge.py:52-98"
+    tests:
+      - "tests/unit/test_bridge_unit.py::TestMAVLinkBridgeConnection::test_connect_success_first_attempt"
+    standard: "DO-178C"
+
+  REQ-BRIDGE-002:
+    description: "Connection retries with exponential backoff on failure"
+    source: "src/bridge/mavlink_bridge.py:56-93"
+    tests:
+      - "tests/unit/test_bridge_unit.py::TestMAVLinkBridgeConnection::test_connect_retries_on_timeout"
+    standard: "DO-178C"
+
+  REQ-BRIDGE-003:
+    description: "ConnectionError raised after exhausting retry attempts"
+    source: "src/bridge/mavlink_bridge.py:95-98"
+    tests:
+      - "tests/unit/test_bridge_unit.py::TestMAVLinkBridgeConnection::test_connect_fails_after_max_retries"
+    standard: "DO-178C"
+
+  REQ-BRIDGE-004:
+    description: "Default connection state is disconnected"
+    source: "src/bridge/mavlink_bridge.py:42-48"
+    tests:
+      - "tests/unit/test_bridge_unit.py::TestMAVLinkBridgeConnection::test_is_connected_default_false"
+      - "tests/unit/test_bridge_unit.py::TestMAVLinkBridgeConnection::test_latest_telemetry_default_none"
+    standard: "DO-178C"
+
+  REQ-BRIDGE-005:
+    description: "Health check returns false when disconnected"
+    source: "src/bridge/mavlink_bridge.py:161-171"
+    tests:
+      - "tests/unit/test_bridge_unit.py::TestMAVLinkBridgeHealth::test_is_healthy_returns_false_when_disconnected"
+    standard: "DO-178C"
+
+  REQ-BRIDGE-006:
+    description: "Concurrent reconnect calls are serialized"
+    source: "src/bridge/mavlink_bridge.py:173-206"
+    tests:
+      - "tests/unit/test_bridge_unit.py::TestMAVLinkBridgeHealth::test_reconnect_prevents_concurrent_calls"
+    standard: "DO-178C"
+
+  # ── Flight Commands ──────────────────────────────────────────
+  REQ-FLIGHT-001:
+    description: "arm() sends arm command to PX4"
+    source: "src/bridge/commands.py:109-118"
+    tests:
+      - "tests/unit/test_flight_commands_unit.py::TestFlightCommandsRetry::test_arm_success"
+    standard: "DO-178C"
+
+  REQ-FLIGHT-007:
+    description: "gRPC retry recovers from UNAVAILABLE errors"
+    source: "src/bridge/commands.py:62-105"
+    tests:
+      - "tests/unit/test_flight_commands_unit.py::TestFlightCommandsRetry::test_retry_on_grpc_unavailable"
+      - "tests/protocol/test_command_reliability.py::TestCommandReliability::test_retry_recovers_from_transient_error"
+    standard: "DO-178C"
+
+  REQ-FLIGHT-008:
+    description: "ActionError is not retried (real drone error)"
+    source: "src/bridge/commands.py:72-73"
+    tests:
+      - "tests/unit/test_flight_commands_unit.py::TestFlightCommandsRetry::test_no_retry_on_action_error"
+    standard: "DO-178C"
+
+  # ── Mission Executor ─────────────────────────────────────────
+  REQ-EXEC-001:
+    description: "Preflight passes with connection + GPS fix"
+    source: "src/mission/executor.py:66-104"
+    tests:
+      - "tests/unit/test_executor_unit.py::TestDoPreFlight::test_preflight_pass_when_connected_and_gps"
+    standard: "DO-178C"
+
+  REQ-EXEC-006:
+    description: "Takeoff aborts on connection failure"
+    source: "src/mission/executor.py:106-136"
+    tests:
+      - "tests/unit/test_executor_unit.py::TestDoTakeoff::test_takeoff_abort_on_connection_error"
+      - "tests/unit/test_executor_unit.py::TestDoTakeoff::test_takeoff_abort_on_altitude_timeout"
+    standard: "DO-178C"
+
+  # ── Geofence (FAA/EASA) ─────────────────────────────────────
+  REQ-GEO-001:
+    description: "Drone within geofence → safe"
+    source: "src/mission/safety.py:55-90"
+    tests:
+      - "tests/failsafe/test_geofence.py::TestGeofenceDetection::test_well_within_geofence_is_safe"
+    standard: "ISO 21384 / FAA"
+
+  REQ-GEO-003:
+    description: "Drone beyond geofence radius → RTL_NOW"
+    source: "src/mission/safety.py:78-84"
+    tests:
+      - "tests/failsafe/test_geofence.py::TestGeofenceDetection::test_beyond_geofence_triggers_rtl"
+      - "tests/failsafe/test_geofence.py::TestGeofenceMissionIntegration::test_safety_monitor_geofence_with_full_rule_set"
+    standard: "ISO 21384 / FAA"
+
+  REQ-GEO-006:
+    description: "Geofence enforced in all cardinal directions"
+    source: "src/mission/safety.py:55-90"
+    tests:
+      - "tests/failsafe/test_geofence.py::TestGeofenceDetection::test_geofence_in_all_cardinal_directions"
+    standard: "ISO 21384 / FAA"
+
+  # ── Loss of Link (FAA) ──────────────────────────────────────
+  REQ-LOL-001:
+    description: "Connection loss triggers RTL"
+    source: "src/mission/safety.py:119-130"
+    tests:
+      - "tests/failsafe/test_loss_of_link.py::TestLossOfLinkDetection::test_connection_loss_triggers_rtl"
+      - "tests/failsafe/test_loss_of_link.py::TestLossOfLinkDetection::test_connection_loss_in_safety_monitor"
+    standard: "FAA"
+
+  REQ-LOL-006:
+    description: "Connection check completes in < 1ms"
+    source: "src/mission/safety.py:119-130"
+    tests:
+      - "tests/failsafe/test_loss_of_link.py::TestLossOfLinkTiming::test_connection_rule_evaluates_instantly"
+    standard: "FAA"
+
+  # ── Battery Failsafe (FAA) ──────────────────────────────────
+  REQ-BAT-002:
+    description: "Low battery (< 20%) triggers RTL_NOW"
+    source: "src/mission/safety.py:26-52"
+    tests:
+      - "tests/failsafe/test_battery_failsafe.py::TestBatteryThresholds::test_low_battery_triggers_rtl"
+    standard: "FAA"
+
+  REQ-BAT-003:
+    description: "Critical battery (< 10%) triggers EMERGENCY_LAND"
+    source: "src/mission/safety.py:44-46"
+    tests:
+      - "tests/failsafe/test_battery_failsafe.py::TestBatteryThresholds::test_critical_battery_triggers_emergency_land"
+    standard: "FAA"
+
+  # ── Abort Recovery ──────────────────────────────────────────
+  REQ-ABORT-007:
+    description: "Full recovery: ABORT → RTL → LANDED → IDLE"
+    source: "src/mission/state_machine.py:45-77"
+    tests:
+      - "tests/failsafe/test_abort_recovery.py::TestAbortRecovery::test_abort_rtl_to_landed_to_idle"
+    standard: "DO-178C / FAA"
+
+  REQ-ABORT-008:
+    description: "safety_rtl from all flying states"
+    source: "src/mission/state_machine.py:70-76"
+    tests:
+      - "tests/failsafe/test_abort_recovery.py::TestAbortRecovery::test_safety_rtl_from_all_flying_states"
+    standard: "DO-178C / FAA"
+
+  # ── Protocol Integrity ──────────────────────────────────────
+  REQ-PROTO-005:
+    description: "No NaN in critical telemetry fields"
+    source: "src/core/types.py:39-58"
+    tests:
+      - "tests/protocol/test_mavlink_integrity.py::TestTelemetryFieldValidation::test_no_nan_in_critical_fields"
+    standard: "DO-178C"
+
+  REQ-PROTO-009:
+    description: "No dropped events under load (>95% delivery)"
+    source: "src/core/events.py:54-77"
+    tests:
+      - "tests/protocol/test_telemetry_rate.py::TestTelemetryRate::test_no_dropped_events_under_load"
+    standard: "DO-178C"
