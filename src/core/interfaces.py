@@ -100,6 +100,9 @@ class FlightController(ABC):
     @abstractmethod
     async def wait_for_landed(self, timeout_s: float = 60.0) -> bool: ...
 
+    @abstractmethod
+    async def wait_for_disarmed(self, timeout_s: float = 60.0) -> bool: ...
+
     @property
     @abstractmethod
     def is_offboard_active(self) -> bool: ...

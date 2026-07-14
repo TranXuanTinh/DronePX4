@@ -204,39 +204,59 @@ class FlightCommands(FlightController):
             f"Waiting for altitude {target_m}m "
             f"(±{tolerance_m}m, timeout {timeout_s}s)..."
         )
-        start = time.monotonic()
-        try:
+        async def _wait():
             async for pos in self._drone.telemetry.position():
                 if abs(pos.relative_altitude_m - target_m) <= tolerance_m:
                     logger.info(
                         f"Altitude reached: {pos.relative_altitude_m:.1f}m"
                     )
                     return True
-                if time.monotonic() - start > timeout_s:
-                    break
+            return False
+
+        try:
+            return await asyncio.wait_for(_wait(), timeout=timeout_s)
         except asyncio.TimeoutError:
-            pass
+            logger.warning(f"Altitude wait timed out after {timeout_s}s")
+            return False
         except Exception as e:
             logger.warning(f"Altitude wait error: {e}")
-        logger.warning(f"Altitude wait timed out after {timeout_s}s")
-        return False
+            return False
 
     async def wait_for_landed(self, timeout_s: float = 60.0) -> bool:
         logger.info("Waiting for landing...")
-        start = time.monotonic()
-        try:
+        async def _wait():
             async for state in self._drone.telemetry.landed_state():
                 if str(state) in ("ON_GROUND", "LandedState.ON_GROUND"):
                     logger.info("Vehicle has landed")
                     return True
-                if time.monotonic() - start > timeout_s:
-                    break
+            return False
+
+        try:
+            return await asyncio.wait_for(_wait(), timeout=timeout_s)
         except asyncio.TimeoutError:
-            pass
+            logger.warning(f"Landing wait timed out after {timeout_s}s")
+            return False
         except Exception as e:
             logger.warning(f"Landing wait error: {e}")
-        logger.warning(f"Landing wait timed out after {timeout_s}s")
-        return False
+            return False
+
+    async def wait_for_disarmed(self, timeout_s: float = 60.0) -> bool:
+        logger.info("Waiting for disarm...")
+        async def _wait():
+            async for armed in self._drone.telemetry.armed():
+                if not armed:
+                    logger.info("Vehicle is disarmed")
+                    return True
+            return False
+
+        try:
+            return await asyncio.wait_for(_wait(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            logger.warning(f"Disarm wait timed out after {timeout_s}s")
+            return False
+        except Exception as e:
+            logger.warning(f"Disarm wait error: {e}")
+            return False
 
     @property
     def is_offboard_active(self) -> bool:

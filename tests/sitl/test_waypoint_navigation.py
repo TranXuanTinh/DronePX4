@@ -48,6 +48,7 @@ class TestSITLWaypointNavigation:
         # RTL cleanup
         await sitl_flight.rtl()
         await sitl_flight.wait_for_landed(timeout_s=60.0)
+        await sitl_flight.wait_for_disarmed(timeout_s=30.0)
         await sitl_ready.stop_telemetry_stream()
 
 
@@ -93,4 +94,5 @@ class TestSITLMultiWaypoint:
         # Cleanup
         await sitl_flight.rtl()
         await sitl_flight.wait_for_landed(timeout_s=60.0)
+        await sitl_flight.wait_for_disarmed(timeout_s=30.0)
         await sitl_ready.stop_telemetry_stream()
