@@ -95,5 +95,15 @@ echo " Press Ctrl+C to stop"
 echo "=============================================="
 echo ""
 
+# Apply PX4 parameter overrides for autonomous SITL operation
+# (disables GCS/RC requirements — see config/px4_params/sitl_overrides.sh)
+OVERRIDES="${PROJECT_DIR}/config/px4_params/sitl_overrides.sh"
+if [ -f "$OVERRIDES" ]; then
+    source "$OVERRIDES"
+else
+    echo "WARNING: SITL overrides not found at $OVERRIDES"
+    echo "GCS connection may be required. Run without QGC at your own risk."
+fi
+
 cd "$PX4_DIR"
 make px4_sitl "$MODEL"

@@ -34,7 +34,7 @@ class MAVLinkBridge(DroneConnector):
             telem = bridge.latest_telemetry
     """
 
-    SITL_ADDRESS = "udp://:14540"
+    SITL_ADDRESS = "udpin://0.0.0.0:14540"
     MAVSDK_PORT = 50051
     MAX_CONNECT_RETRIES = 3
     CONNECT_RETRY_DELAY = 2.0

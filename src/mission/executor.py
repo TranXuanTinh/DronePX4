@@ -91,9 +91,17 @@ class MissionExecutor:
                     else:
                         return "checks_fail"
 
-            telem = self.connector.latest_telemetry
-            if telem and telem.gps_fix_type < 3:
-                logger.error("No GPS fix")
+            # Wait up to 15 seconds for a valid GPS fix
+            gps_ok = False
+            for _ in range(15):
+                telem = self.connector.latest_telemetry
+                if telem and telem.gps_fix_type >= 3:
+                    gps_ok = True
+                    break
+                await asyncio.sleep(1.0)
+                
+            if not gps_ok:
+                logger.error("No GPS fix (timed out waiting for 3D fix)")
                 return "checks_fail"
 
             logger.info("Preflight checks passed")

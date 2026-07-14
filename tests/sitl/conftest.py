@@ -19,7 +19,7 @@ async def sitl_bridge():
     """
     bridge = MAVLinkBridge()
     try:
-        await asyncio.wait_for(bridge.connect(), timeout=15.0)
+        await asyncio.wait_for(bridge.connect(), timeout=60.0)
     except (ConnectionError, TimeoutError, asyncio.TimeoutError):
         pytest.skip("PX4 SITL not available")
 

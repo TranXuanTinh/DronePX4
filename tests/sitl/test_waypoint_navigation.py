@@ -29,6 +29,7 @@ class TestSITLWaypointNavigation:
         target_lon = 8.545594
         await sitl_flight.goto(target_lat, target_lon, 20.0)
 
+        await sitl_ready.start_telemetry_stream(rate_hz=10.0)
         # Wait for arrival (check every 2s for up to 60s)
         for _ in range(30):
             await asyncio.sleep(2.0)
@@ -47,6 +48,7 @@ class TestSITLWaypointNavigation:
         # RTL cleanup
         await sitl_flight.rtl()
         await sitl_flight.wait_for_landed(timeout_s=60.0)
+        await sitl_ready.stop_telemetry_stream()
 
 
 @pytest.mark.sitl
@@ -68,6 +70,7 @@ class TestSITLMultiWaypoint:
         reached = await sitl_flight.wait_for_altitude(20.0, tolerance_m=3.0, timeout_s=30.0)
         assert reached
 
+        await sitl_ready.start_telemetry_stream(rate_hz=10.0)
         visited = 0
         for wp in waypoints:
             await sitl_flight.goto(wp.latitude, wp.longitude, wp.altitude)
@@ -90,3 +93,4 @@ class TestSITLMultiWaypoint:
         # Cleanup
         await sitl_flight.rtl()
         await sitl_flight.wait_for_landed(timeout_s=60.0)
+        await sitl_ready.stop_telemetry_stream()

@@ -21,9 +21,14 @@ class TestSITLConnection:
     async def test_telemetry_available_after_stream_start(self, sitl_ready):
         """REQ-SITL-CONN-002: Telemetry is populated after stream start."""
         await sitl_ready.start_telemetry_stream(rate_hz=10.0)
-        await asyncio.sleep(1.0)  # Allow stream to populate
-
-        telem = sitl_ready.latest_telemetry
+        
+        telem = None
+        for _ in range(10):
+            await asyncio.sleep(1.0)
+            telem = sitl_ready.latest_telemetry
+            if telem and telem.gps_fix_type >= 3:
+                break
+                
         assert telem is not None
         assert telem.gps_fix_type >= 3
 
@@ -33,9 +38,14 @@ class TestSITLConnection:
     async def test_gps_fix_type_3d(self, sitl_ready):
         """REQ-SITL-CONN-003: GPS fix type is at least 3D."""
         await sitl_ready.start_telemetry_stream(rate_hz=10.0)
-        await asyncio.sleep(1.0)
+        
+        telem = None
+        for _ in range(10):
+            await asyncio.sleep(1.0)
+            telem = sitl_ready.latest_telemetry
+            if telem and telem.gps_fix_type >= 3:
+                break
 
-        telem = sitl_ready.latest_telemetry
         assert telem is not None
         assert telem.gps_fix_type >= 3, (
             f"GPS fix type {telem.gps_fix_type} < 3 (no 3D fix)"

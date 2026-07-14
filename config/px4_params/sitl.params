@@ -1,5 +1,6 @@
 # PX4 SITL Parameters for Autonomous Inspection Drone
-# Load via QGC or: param load /path/to/sitl.params
+# These values are auto-applied via sitl_overrides.sh (PX4_PARAM_* env vars).
+# To load manually: QGC or `param load /path/to/sitl.params` in pxh>
 
 # === Airframe ===
 # X500 Quadcopter (standard SITL model)
