@@ -119,6 +119,7 @@ class MissionStateMachine:
         )
 
         self._mission_start_time: float = 0.0
+        self._mission_end_time: float = 0.0
         self._running = False
 
         # Legacy callbacks
@@ -147,7 +148,11 @@ class MissionStateMachine:
     def mission_elapsed_s(self) -> float:
         if self._mission_start_time == 0:
             return 0.0
-        return time.time() - self._mission_start_time
+        if self._running:
+            return time.time() - self._mission_start_time
+        if self._mission_end_time == 0.0:
+            return 0.0
+        return self._mission_end_time - self._mission_start_time
 
     # ── Callbacks (legacy API) ───────────────────────────────
 
@@ -167,6 +172,7 @@ class MissionStateMachine:
         self._executor.current_waypoint_idx = 0
         self._executor.detections = []
         self._mission_start_time = time.time()
+        self._mission_end_time = 0.0
         self._running = True
 
         logger.info(f"Starting mission with {len(waypoints)} waypoints")
@@ -186,6 +192,7 @@ class MissionStateMachine:
             await self._executor.flight.rtl()
         finally:
             self._running = False
+            self._mission_end_time = time.time()
 
         logger.info(
             f"Mission complete. Duration: {self.mission_elapsed_s:.1f}s, "

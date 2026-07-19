@@ -10,6 +10,7 @@ Splits the old monolithic GazeboCamera into proper subclasses:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Optional, Tuple
 
@@ -17,6 +18,7 @@ import cv2
 import numpy as np
 
 from src.core.interfaces import CameraSource
+from src.core.types import Detection
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,33 @@ class TestPatternCamera(CameraSource):
 
         self._frame_count += 1
         return frame
+
+    def get_detections(self) -> list[Detection]:
+        """Get simulated object detections for the current frame."""
+        frame_idx = max(0, self._frame_count - 1)
+        offset_x = int(10 * math.sin(frame_idx * 0.05))
+        offset_y = int(5 * math.cos(frame_idx * 0.03))
+
+        objects = [
+            ((100, 150, 180, 230), "car", 2),
+            ((300, 200, 380, 280), "person", 0),
+            ((450, 100, 530, 180), "truck", 7),
+        ]
+
+        detections = []
+        for (x1, y1, x2, y2), label, class_id in objects:
+            x1 = max(0, x1 + offset_x)
+            y1 = max(0, y1 + offset_y)
+            x2 = min(self._width, x2 + offset_x)
+            y2 = min(self._height, y2 + offset_y)
+            detections.append(Detection(
+                bbox=np.array([x1, y1, x2, y2]),
+                class_id=class_id,
+                class_name=label,
+                confidence=0.92,
+            ))
+        return detections
+
 
 
 # ──────────────────────────────────────────────────────────────

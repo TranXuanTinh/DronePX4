@@ -62,6 +62,10 @@ fi
 export GZ_SIM_RESOURCE_PATH="${PROJECT_DIR}/config/gazebo/models:${GZ_SIM_RESOURCE_PATH:-}"
 export GZ_SIM_WORLD_PATH="${PROJECT_DIR}/config/gazebo/worlds:${GZ_SIM_WORLD_PATH:-}"
 
+# Force discrete NVIDIA GPU utilization for Gazebo rendering on hybrid graphics systems
+export __NV_PRIME_RENDER_OFFLOAD=1
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+
 # Headless mode
 if [ "$HEADLESS" = true ]; then
     export HEADLESS=1

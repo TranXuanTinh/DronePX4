@@ -17,7 +17,7 @@ from src.core.interfaces import (
 )
 from src.core.types import (
     TelemetryFrame, Waypoint, GeotaggedDetection,
-    Track, SafetyAction,
+    Track, SafetyAction, TracksUpdatedEvent,
 )
 from src.core.geo import haversine_distance
 from src.core.events import EventBus
@@ -167,8 +167,20 @@ class MissionExecutor:
         # Run perception
         frame = self.camera.get_frame()
         if frame is not None:
-            detections = self.detector.detect(frame)
+            detector_detections = []
+            if self.detector:
+                try:
+                    detector_detections = self.detector.detect(frame)
+                except Exception as e:
+                    logger.warning(f"Detector inference failed: {e}")
+
+            if hasattr(self.camera, "get_detections"):
+                detections = self.camera.get_detections()
+            else:
+                detections = detector_detections
             self.current_tracks = self.tracker.update(detections)
+            if self.event_bus:
+                await self.event_bus.publish(TracksUpdatedEvent(tracks=self.current_tracks))
 
             confirmed = [t for t in self.current_tracks if t.is_confirmed]
             if confirmed and telem:
@@ -181,12 +193,27 @@ class MissionExecutor:
                     time.time(),
                 )
                 if geotagged:
-                    self.pending_detection = geotagged[0]
-                    logger.info(
-                        f"Object detected! "
-                        f"{len(confirmed)} confirmed tracks"
-                    )
-                    return "object_detected"
+                    new_detections = []
+                    for g_det in geotagged:
+                        is_duplicate = False
+                        for logged in self.detections:
+                            dist = haversine_distance(
+                                g_det.latitude_deg, g_det.longitude_deg,
+                                logged.latitude_deg, logged.longitude_deg,
+                            )
+                            if dist < 10.0:  # Within 10 meters is the same object
+                                is_duplicate = True
+                                break
+                        if not is_duplicate:
+                            new_detections.append(g_det)
+
+                    if new_detections:
+                        self.pending_detection = new_detections[0]
+                        logger.info(
+                            f"Object detected! "
+                            f"{len(new_detections)} confirmed tracks"
+                        )
+                        return "object_detected"
 
         # Check waypoint arrival
         if telem:
@@ -211,8 +238,20 @@ class MissionExecutor:
         for _ in range(confirm_frames * 2):
             frame = self.camera.get_frame()
             if frame is not None:
-                detections = self.detector.detect(frame)
+                detector_detections = []
+                if self.detector:
+                    try:
+                        detector_detections = self.detector.detect(frame)
+                    except Exception as e:
+                        logger.warning(f"Detector inference failed: {e}")
+
+                if hasattr(self.camera, "get_detections"):
+                    detections = self.camera.get_detections()
+                else:
+                    detections = detector_detections
                 tracks = self.tracker.update(detections)
+                if self.event_bus:
+                    await self.event_bus.publish(TracksUpdatedEvent(tracks=tracks))
                 if any(t.is_confirmed for t in tracks):
                     confirm_count += 1
                 if confirm_count >= confirm_frames:
@@ -233,8 +272,20 @@ class MissionExecutor:
         while time.time() - start < inspect_duration:
             frame = self.camera.get_frame()
             if frame is not None:
-                detections = self.detector.detect(frame)
+                detector_detections = []
+                if self.detector:
+                    try:
+                        detector_detections = self.detector.detect(frame)
+                    except Exception as e:
+                        logger.warning(f"Detector inference failed: {e}")
+
+                if hasattr(self.camera, "get_detections"):
+                    detections = self.camera.get_detections()
+                else:
+                    detections = detector_detections
                 self.current_tracks = self.tracker.update(detections)
+                if self.event_bus:
+                    await self.event_bus.publish(TracksUpdatedEvent(tracks=self.current_tracks))
             await asyncio.sleep(0.2)
 
         logger.info("Inspection complete")

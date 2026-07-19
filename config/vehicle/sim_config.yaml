@@ -26,7 +26,7 @@ camera:
 perception:
   model: "yolov8s.pt"               # Ultralytics model file
   backend: "pytorch"                 # pytorch | onnx
-  device: "cpu"                      # cpu | cuda:0
+  device: "cuda"                      # cpu | cuda
   confidence_threshold: 0.45
   nms_threshold: 0.45
   classes:                           # COCO classes to detect

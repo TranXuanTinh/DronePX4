@@ -185,3 +185,10 @@ class StateChangeEvent:
     old_state: str
     new_state: str
     timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(slots=True)
+class TracksUpdatedEvent:
+    """Published when the tracking pipeline updates active tracks."""
+    tracks: list[Track]
+

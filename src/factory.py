@@ -12,7 +12,9 @@ import logging
 from typing import Optional
 
 from src.core.events import EventBus
-from src.core.types import TelemetryFrame
+from src.core.types import (
+    TelemetryFrame, TelemetryEvent, StateChangeEvent, TracksUpdatedEvent,
+)
 from src.bridge.mavlink_bridge import MAVLinkBridge
 from src.bridge.commands import FlightCommands
 from src.bridge.telemetry import TelemetryCollector
@@ -127,6 +129,30 @@ class AppFactory:
         )
         container.video_server = video_server
         asyncio.create_task(video_server.stream_loop())
+
+        # Wire EventBus updates to VideoServer status and tracks
+        async def on_telemetry(event: TelemetryEvent):
+            frame = event.frame
+            video_server.update_status(
+                state=video_server._mission_state,
+                battery_pct=frame.battery_percent,
+                altitude_m=frame.position.relative_altitude_m,
+            )
+
+        async def on_state_change(event: StateChangeEvent):
+            video_server.update_status(
+                state=event.new_state,
+                battery_pct=video_server._battery_pct,
+                altitude_m=video_server._altitude_m,
+            )
+
+        async def on_tracks_updated(event: TracksUpdatedEvent):
+            video_server.update_tracks(event.tracks)
+
+        container.event_bus.subscribe(TelemetryEvent, on_telemetry)
+        container.event_bus.subscribe(StateChangeEvent, on_state_change)
+        container.event_bus.subscribe(TracksUpdatedEvent, on_tracks_updated)
+
 
         # --- Safety ---
         safety_cfg = config.get("safety", {})
