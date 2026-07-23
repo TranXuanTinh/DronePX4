@@ -6,6 +6,8 @@ An autonomous inspection drone system built on PX4 SITL with computer vision
 (YOLOv8 + ByteTrack), an event-driven mission state machine, and a real-time
 operator dashboard. Everything runs in simulation.
 
+![Drone Inspector Demo](Result.gif)
+
 ---
 
 ## 🏗️ Architecture
